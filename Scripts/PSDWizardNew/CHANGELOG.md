@@ -1,5 +1,22 @@
 # Change log for PSDWizardNew
 
+## 2.2.9 Feb 24, 2024
+
+- (PC) Fixed issue with workgroup and domain join value conflict (https://github.com/FriendsOfMDT/PSD/issues/117)
+- (PC) Fixed issue with local not showing up in ui (https://github.com/FriendsOfMDT/PSD/issues/123)
+- (PC) Fixed issue with Domain Join OU not working; used wrong variable DomainJoinOU instead of MachineObjectOU
+- (PC) Added DomainOUs1 list option (https://github.com/FriendsOfMDT/PSD/issues/135)
+- (PC) Moved all PSDWizard functions from PSDWizard.Initialize.ps1 to module
+- (PC) Added troubleshooting function in PSDWizard.Initialize.ps1
+
+## 2.2.8 Jan 21, 2024
+
+- (PC) Fixed miss-spelled Where-Object-Object. (Thanks @Tenster)
+- (PC) Expanded all alias to cmdlets (eg % --> Foreach-Object)
+- (PC) Fixed pre-selected Task sequence
+- (PC) Moved PSDWizard functions from Initializer script to PSDWizardNew module.
+
+
 ## 2.2.7 Aug 27, 2023
 
 - (PC) - Changed test functions to reflect module for PSDWizard; ensure no conflict

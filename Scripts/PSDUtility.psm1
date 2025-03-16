@@ -516,7 +516,8 @@ function Copy-PSDFolder {
     $s = $source.TrimEnd("\")
     $d = $destination.TrimEnd("\")
     # Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Copying folder $source to $destination using XCopy"
-    $null = Start-Process xcopy -ArgumentList "$s $d /s /e /v /d /y /i" -NoNewWindow -Wait -Passthru -RedirectStandardOutput xcopy
+    #FIX https://github.com/FriendsOfMDT/PSD/issues/205
+    $null = Start-Process xcopy -ArgumentList """$s"" ""$d"" /s /e /v /d /y /i" -NoNewWindow -Wait -Passthru -RedirectStandardOutput xcopy
 }
 
 function Test-PSDNetCon {
@@ -677,7 +678,7 @@ Function Show-PSDInfoForm {
             $Deployroot
         )
 
-        # Make PowerShell window disappear while using GUI
+        #ï¿½Makeï¿½PowerShellï¿½window disappearï¿½while using GUI
         $windowcode = '[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);'
         $asyncwindow = Add-Type -MemberDefinition $windowcode -name Win32ShowWindowAsync -namespace Win32Functions -PassThru
         $null = $asyncwindow::ShowWindowAsync((Get-Process -PID $pid).MainWindowHandle, 0)
