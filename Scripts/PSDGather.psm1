@@ -393,16 +393,29 @@ Function Invoke-PSDRules {
 		[string]$FilePath,
 		[ValidateNotNullOrEmpty()]
 		[Parameter(ValueFromPipeline = $True, Mandatory = $True)]
-		[string]$MappingFile
+		[string]$MappingFile,
+		[string]$Section,
+		[switch]$StartClean
 	)
 	Begin {
+		If($StartClean){
+			Clear-PSDRules -RuleType All
+		}
+
+		If($Section){
+			$Append = $false
+		}
+		Else{
+			$Append = $true
+		}
+
 		$global:iniFile = Get-IniContent $FilePath
-		[xml]$global:variableFile = Get-Content $MappingFile
+		[xml]$variableContent = Get-Content $MappingFile
 
 		# Process custom properties
 		if ($global:iniFile["Settings"]["Properties"]) {
 			$global:iniFile["Settings"]["Properties"].Split(",").Trim() | ForEach-Object {
-				$newVar = $global:variableFile.properties.property[0].Clone()
+				$newVar = $variableContent.properties.property[0].Clone()
 				if ($_.EndsWith("(*)")) {
 					$newVar.id = $_.Replace("(*)", "")
 					$newVar.type = "list"
@@ -413,18 +426,240 @@ Function Invoke-PSDRules {
 				}
 				$newVar.overwrite = "false"
 				$newVar.description = "Custom property"
-				Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding custom property $($newVar.id)"
-				$null = $global:variableFile.properties.appendChild($newVar)
+				Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding custom property: $($newVar.id)"
+				$null = $variableContent.properties.appendChild($newVar)
 			}
 		}
-		$global:variables = $global:variableFile.properties.property
+		#update variables with new property
+		$global:variables = $variableContent.properties.property
 	}
 	Process {
-		$global:iniFile["Settings"]["Priority"].Split(",").Trim() | Invoke-PSDRule
+		If($Section){
+			If($global:iniFile[$Section]){
+				Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Section was found: $Section"
+				$Section | Invoke-PSDRule -Append:$Append
+			}
+			Else{
+				Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Section was not found: $Section"
+			}
+		}
+		Else{
+			Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): No section specified, processing Priority"
+			$global:iniFile["Settings"]["Priority"].Split(",").Trim() | Invoke-PSDRule -Append:$Append
+		}
 	}
+	End{}
 }
 
 Function Invoke-PSDRule {
+	[CmdletBinding()]
+	Param(
+		[ValidateNotNullOrEmpty()]
+		[Parameter(ValueFromPipeline = $True, Mandatory = $True)]
+		[string]$RuleName,
+		[switch]$Append
+	)
+	Begin {
+
+	}
+	Process {
+		Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing rule: $RuleName"
+		
+		switch($RuleName){
+			"DEFAULTGATEWAY"{
+				Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Property DEFAULTGATEWAY is not yet implemented"
+			}
+			"SERIALNUMBER"{
+				Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing values of $tsenv:SERIALNUMBER"
+				Invoke-PSDRule -RuleName $tsenv:SERIALNUMBER
+			}
+			default{
+				#check if rule exist as section
+				$v = $global:variables | Where-Object { $_.id -ieq $RuleName }
+				#if it does, iterate through the rules within that section and check its type. 
+				#this will also reloop this function to process the value of the rules within the section (Else statement)
+				If($v){
+					If($v.type -eq "list"){
+						Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing values of $RuleName"
+						(Get-Item tsenvlist:$($v.id)).Value | Invoke-PSDRule
+					}
+					Else{
+						$s = (Get-Item tsenv:$($v.id)).Value
+						If($s -ne ""){
+							Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing value of $RuleName"
+							Invoke-PSDRule $s
+						}
+						Else{
+							Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Skipping rule $RuleName, value is blank"
+						}
+					}
+				}
+				#when a rulename is first process, it will go through each item in section and actual process here
+				Else{
+					Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing PSDSettings: $RuleName"
+					Set-PSDSettings -Section $global:iniFile[$RuleName] -AppendList:$Append
+				}
+			}
+		}#end switch
+
+	}
+}
+
+Function Set-PSDSettings {
+	[CmdletBinding()]
+	Param(
+		$Section,
+		[switch]$AppendList
+	)
+	Begin {
+
+	}
+	Process {
+		$skipProperties = $false
+
+		# Exit if the section doesn't exist
+		if (-not $Section) {
+			return
+		}
+
+		# Process special sections and exits
+		if ($Section.Contains("UserExit")) {
+			# TODO: Process UserExit Before"
+			Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Property UserExit is not yet implemented"
+			$UserScriptName = (Get-Item tsenv:UserExit).Value
+
+			$UserScriptPath = (Get-PSDContent -Content 'PSDResources\UserExitScripts')
+		}
+
+		if ($Section.Contains("SQLServer")) {
+			$skipProperties = $true
+			# TODO: Database"
+		}
+
+		if ($Section.Contains("WebService")) {
+			$skipProperties = $true
+			# TODO: WebService"
+		}
+
+		if ($Section.Contains("Subsection")) {
+			Invoke-PSDRule $Section["Subsection"]
+		}
+
+		# Process properties
+		if (-not $skipProperties) {
+			$Section.Keys | ForEach-Object {
+				$SectionVar = $_
+				#check if if the variable exist in the mapping file
+				$v = $global:variables | Where-Object { $_.id -ieq $SectionVar }
+				if ($v) 
+				{
+					#check if the value is the same as the current value	
+					if ( (Get-Item tsenv:$($v.id) ).Value -eq $Section[$SectionVar])
+					{
+						Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Ignoring property $($v.id). Value is still: $($Section[$SectionVar])"
+					}
+
+					#check if the value is different from the current value or if it is set to overwrite
+					if ( (Get-Item tsenv:$($v.id) ).Value -ne $Section[$SectionVar] -or $v.overwrite -eq "true")
+					{
+						$Value = (Get-Item tsenv:$($v.id)).Value
+						if ($value -eq '') { $value = "Empty" }
+						Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Changing property $($v.id) value to: $($Section[$SectionVar]). Value was: $Value"
+						Set-Item tsenv:$($v.id) -Value $Section[$SectionVar]
+					}
+					elseif ( (Get-Item tsenv:$($v.id) ).Value -eq "") {
+						Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Ignoring property $($v.id). Value is: Null"
+					}
+				}
+			}#end foreach
+			
+			#find the ones for list and remove the appending digits(eg. 001, 002, 003 etc) to get unique list
+			$SectionLists = $Section.Keys | Where-Object {$_ -match '\d{3}$'} | %{$_ -replace '\d{3}$'} | Select -Unique
+			#loop through the list and add as a new list
+			$SectionLists | ForEach-Object {
+				$trimVar = $_
+
+				If(-not $AppendList){
+					Clear-PSDRules -RuleType List -NameFilter $trimVar
+				}
+
+				#then check if it is a list
+				$v = $global:variables | Where-Object { $_.id -ieq $trimVar }
+				
+				if ($v.type -eq "list")
+				{		
+					#loop through the list and add to the list
+					ForEach($SectionVar in $Section.Keys | Where-Object {$_ -match "$trimVar\d{3}$"}) {
+						#check if the value is already in the list
+						$List = ( Get-Item tsenvlist:$($v.id) ).Value
+						If($List -contains $Section[$SectionVar]){
+							Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Ignoring property $($v.id). Value is already in list: $($Section[$SectionVar])"
+						}
+						Else{
+							Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding property $($v.id) with value: $($Section[$SectionVar])"
+							$n = @((Get-Item tsenvlist:$($v.id)).Value)
+							$n += [String] $Section[$SectionVar]
+							#add to the list
+							Set-Item tsenvlist:$($v.id) -Value $n
+						}
+					}
+				}
+				
+			}#end foreach
+			
+		}
+
+		if ($Section.Contains("UserExit")) {
+			# TODO: Process UserExit After"
+			Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Property UserExit is not yet implemented"
+			
+
+		}
+	}
+}
+
+Function Remove-PSDRules{
+	[CmdletBinding()]
+	Param(
+		[ValidateNotNullOrEmpty()]
+		[Parameter(Mandatory = $false)]
+		[string]$FilePath,
+		[string]$Section,
+		[switch]$All
+	)
+	Begin {
+		If($FilePath){
+			$global:iniFile = Get-IniContent $FilePath
+		}
+	}
+	Process {
+		If($All){
+			Clear-PSDRules -RuleType All
+		}
+		ElseIf($Section){
+			If($global:iniFile[$Section]){
+				$global:iniFile[$Section] | Remove-PSDRule
+			}
+			Else{
+				Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Section $Section not found"
+			}
+		}
+		ElseIf($FilePath){
+			$global:iniFile["Settings"]["Priority"].Split(",").Trim() | Remove-PSDRule
+		}
+		Else{
+			#remove based on mapping file
+			$global:variables | ForEach-Object {
+				If($verbosePreference -eq "Continue"){
+					Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Removing rule $($_.id)"
+				}
+				Remove-PSDRule -RuleName $_.id
+			}
+		}
+	}
+}
+
+Function Remove-PSDRule{
 	[CmdletBinding()]
 	Param(
 		[ValidateNotNullOrEmpty()]
@@ -438,27 +673,17 @@ Function Invoke-PSDRule {
 		Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing rule $RuleName"
 
 		$v = $global:variables | Where-Object { $_.id -ieq $RuleName }
-		if ($RuleName.ToUpper() -eq "DEFAULTGATEWAY") {
-			# Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Property DEFAULTGATEWAY is not yet implemented"
-		}
-
-		# Evaluate Serialnumber if exists
-		$v = $global:variables | Where-Object { $_.id -ieq $RuleName }
-		if ($RuleName.ToUpper() -eq "SERIALNUMBER") {
-			Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing values of $tsenv:SERIALNUMBER"
-			Invoke-PSDRule -RuleName $tsenv:SERIALNUMBER
-		}
-
-		elseif ($v) {
+		#remove the rule
+		if ($v) {
 			if ($v.type -eq "list") {
-				Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing values of $RuleName"
-				(Get-Item tsenvlist:$($v.id)).Value | Invoke-PSDRule
+				Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Removing values of $RuleName"
+				Remove-Item -Path tsenvlist:$($v.id)
 			}
 			else {
 				$s = (Get-Item tsenv:$($v.id)).Value
 				if ($s -ne "") {
-					Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing value of $RuleName"
-					Invoke-PSDRule $s
+					Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Removing value of $RuleName"
+					Remove-Item -Path tsenv:$($v.id)
 				}
 				else {
 					Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Skipping rule $RuleName, value is blank"
@@ -466,87 +691,75 @@ Function Invoke-PSDRule {
 			}
 		}
 		else {
-			Get-PSDSettings $global:iniFile[$RuleName]
+			Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Rule $RuleName not found"
 		}
-	}
+	}		
 }
 
-Function Get-PSDSettings {
-	[CmdletBinding()]
-	Param(
-		$section
+Function Clear-PSDRules{
+	<#
+	.SYNOPSIS
+		Clear all TSEnv variables
+	#>
+	param(
+		[Parameter(ValueFromPipeline = $True)]
+		$NameFilter,
+		[ValidateSet("String","List","ThreeDigits","Skip","All")]
+		$RuleType
 	)
-	Begin {
-
+	Begin{
+		
 	}
-	Process {
-		$skipProperties = $false
+	Process{
+		$NameFilter = "$NameFilter*"
 
-		# Exit if the section doesn't exist
-		if (-not $section) {
-			return
+		#Dynamically build Filter for Where-Object
+		If ($PSBoundParameters.ContainsKey('NameFilter')) {
+			$Filter = {$_.Name -like "$($NameFilter.ToUpper())*"}
+		}
+		Else{
+			$Filter = {$_.Name -like '*'}
 		}
 
-		# Process special sections and exits
-		if ($section.Contains("UserExit")) {
-			# TODO: Process UserExit Before"
-			# Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Property UserExit is not yet implemented"
-		}
-
-		if ($section.Contains("SQLServer")) {
-			$skipProperties = $true
-			# TODO: Database"
-		}
-
-		if ($section.Contains("WebService")) {
-			$skipProperties = $true
-			# TODO: WebService"
-		}
-
-		if ($section.Contains("Subsection")) {
-			Invoke-PSDRule $section["Subsection"]
-		}
-
-		# Process properties
-		if (-not $skipProperties) {
-			$section.Keys | ForEach-Object {
-				$sectionVar = $_
-				$v = $global:variables | Where-Object { $_.id -ieq $sectionVar }
-				if ($v) {
-					if ((Get-Item tsenv:$v).Value -eq $section[$sectionVar]) {
-						# Do nothing, value unchanged
-					}
-					if ((Get-Item tsenv:$v).Value -eq "" -or $v.overwrite -eq "true") {
-						$Value = $((Get-Item tsenv:$($v.id)).Value)
-						if ($value -eq '') { $value = "Empty" }
-						Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Changing property $($v.id) to $($section[$sectionVar]), was $Value"
-						Set-Item tsenv:$($v.id) -Value $section[$sectionVar]
-					}
-					elseif ((Get-Item tsenv:$v).Value -ne "") {
-						Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Ignoring new value for $($v.id)"
-					}
-				}
-				else {
-					$trimVar = $sectionVar.TrimEnd("0", "1", "2", "3", "4", "5", "6", "7", "8", "9")
-					$v = $global:variables | Where-Object { $_.id -ieq $trimVar }
-					if ($v) {
-						if ($v.type -eq "list") {
-							Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding $($section[$sectionVar]) to $($v.id)"
-							$n = @((Get-Item tsenvlist:$($v.id)).Value)
-							$n += [String] $section[$sectionVar]
-							Set-Item tsenvlist:$($v.id) -Value $n
-						}
-					}
+		switch($RuleType){
+			"String"{
+				Get-ChildItem -Path tsenv:$($NameFilter.ToUpper()) | ForEach-Object {
+					Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Removing property $($_.Name)"
+					Remove-Item -Path tsenv:$($_.Name)
 				}
 			}
-		}
-
-		if ($section.Contains("UserExit")) {
-			# TODO: Process UserExit After"
-			# Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Property UserExit is not yet implemented"
-		}
+			"List"{
+				Get-ChildItem -Path tsenvlist:$($NameFilter.ToUpper()) | ForEach-Object {
+					Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Removing property $($_.Name)"
+					Remove-Item -Path tsenvlist:$($_.Name)
+				}
+			}
+			"Skip"{
+				Get-ChildItem -Path tsenv:SKIP* | Where-Object -FilterScript $Filter | ForEach-Object {
+					Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Removing property $($_.Name)"
+					Remove-Item -Path tsenv:$($_.Name)
+				}
+			}
+			"ThreeDigits"{
+				Get-ChildItem -Path tsenv:*0* | Where-Object -FilterScript $Filter | ForEach-Object {
+					Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Removing property $($_.Name)"
+					Remove-Item -Path tsenv:$($_.Name)
+				}
+			}
+			default{
+				Get-ChildItem -Path tsenv:$($NameFilter.ToUpper()) | ForEach-Object {
+					Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Removing property $($_.Name)"
+					Remove-Item -Path tsenv:$($_.Name)
+				}
+				Get-ChildItem -Path tsenvlist:$($NameFilter.ToUpper()) | ForEach-Object {
+					Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Removing property $($_.Name)"
+					Remove-Item -Path tsenvlist:$($_.Name)
+				}
+			}
+		}#end switch
 	}
 }
+
 
 Function Get-IniContent {
 	<#
@@ -619,29 +832,29 @@ Function Get-IniContent {
 		switch -regex -file $FilePath {
 			"^\[(.+)\]$" {
 				# Section
-				$section = $matches[1]
-				$ini[$section] = @{}
+				$Section = $matches[1]
+				$ini[$Section] = @{}
 				$CommentCount = 0
 			}
 			"^(;.*)$" {
 				# Comment
-				if (!($section)) {
-					$section = "No-Section"
-					$ini[$section] = @{}
+				if (!($Section)) {
+					$Section = "No-Section"
+					$ini[$Section] = @{}
 				}
 				$value = $matches[1]
 				$CommentCount = $CommentCount + 1
 				$name = "Comment" + $CommentCount
-				$ini[$section][$name] = $value
+				$ini[$Section][$name] = $value
 			}
 			"(.+?)\s*=\s*(.*)" {
 				# Key
-				if (!($section)) {
-					$section = "No-Section"
-					$ini[$section] = @{}
+				if (!($Section)) {
+					$Section = "No-Section"
+					$ini[$Section] = @{}
 				}
 				$name, $value = $matches[1..2]
-				$ini[$section][$name] = $value
+				$ini[$Section][$name] = $value
 			}
 		}
 		# Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Finished Processing file: $FilePath"

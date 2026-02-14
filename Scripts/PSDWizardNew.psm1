@@ -13,8 +13,8 @@
     Contact: Dick Tracy (@PowershellCrack)
     Primary: Dick Tracy (@PowershellCrack)
     Created: 2020-01-12
-    Modified: 2025-02-08
-    Version: 2.3.7
+    Modified: 2024-12-29
+    Version: 2.3.6
 
     SEE CHANGELOG.MD
 
@@ -242,24 +242,23 @@ Function Format-PSDWizard {
         Build the XAML dynamically from definition file
 
     .EXAMPLE
-        $SourcePath = 'D:\DeploymentShares\PSD\scripts\PSDWizardNew'
+        $Path = 'D:\DeploymentShares\PSD\scripts\PSDWizardNew'
         $ThemeFile = 'Classic_Theme_Definitions_en-US.xml'
-        [Xml.XmlDocument]$LangDefinition = (Get-Content "$SourcePath\PSDWizard_Definitions_en-US.xml")
-        [Xml.XmlDocument]$ThemeDefinition = (Get-Content "$SourcePath\Themes\$ThemeFile")
-        Format-PSDWizard -SourcePath $SourcePath -LangDefinition $LangDefinition -ThemeDefinition $ThemeDefinition -Test -Passthru
+        [Xml.XmlDocument]$LangDefinition = (Get-Content "$Path\PSDWizard_Definitions_en-US.xml")
+        [Xml.XmlDocument]$ThemeDefinition = (Get-Content "$Path\Themes\$ThemeFile")
+        Format-PSDWizard -Path $Path -LangDefinition $LangDefinition -ThemeDefinition $ThemeDefinition -Test -Passthru
 
     .EXAMPLE
-        $SourcePath = 'D:\DeploymentShares\PSD\scripts\PSDWizardNew'
+        $Path = 'D:\DeploymentShares\PSD\scripts\PSDWizardNew'
         $ThemeFile = 'Refresh_Theme_Definitions_en-US.xml'
-        [Xml.XmlDocument]$LangDefinition = (Get-Content "$SourcePath\PSDWizard_Definitions_en-US.xml")
-        [Xml.XmlDocument]$ThemeDefinition = (Get-Content "$SourcePath\Themes\$ThemeFile")
-        Format-PSDWizard -SourcePath $SourcePath -LangDefinition $LangDefinition -ThemeDefinition $ThemeDefinition
+        [Xml.XmlDocument]$LangDefinition = (Get-Content "$Path\PSDWizard_Definitions_en-US.xml")
+        [Xml.XmlDocument]$ThemeDefinition = (Get-Content "$Path\Themes\$ThemeFile")
+        Format-PSDWizard -Path $Path -LangDefinition $LangDefinition -ThemeDefinition $ThemeDefinition
     #>
     [CmdletBinding()]
     Param(
         [parameter(Mandatory = $true)]
-        [Alias('Path')]
-        [string]$SourcePath,
+        [string]$Path,
 
         [parameter(Mandatory = $true)]
         [Xml.XmlDocument]$LangDefinition,
@@ -277,12 +276,12 @@ Function Format-PSDWizard {
 
     #determine if path is has a file in path or is just a container
     #Make the path the working path
-    If (Test-Path -Path $SourcePath -PathType Container) {
-        $WorkingPath = $SourcePath -replace '\\$', ''
+    If (Test-Path -Path $Path -PathType Container) {
+        $WorkingPath = $Path -replace '\\$', ''
     }
     Else {
         # we don't need the fie; just the path
-        $WorkingPath = Split-Path $SourcePath -Parent
+        $WorkingPath = Split-Path $Path -Parent
     }
     #build paths to resources and templates
     [string]$ResourcePath = (Join-Path -Path $WorkingPath -ChildPath 'Resources')
@@ -555,12 +554,16 @@ function Export-PSDWizardResult {
             }
             elseif ($name -eq 'Applications') {
                 #get apps listed in the tsenv
-                $apps = Get-PSDWizardTSEnvProperty $name -WildCard
-                #if no apps, generate a fake app object that contains name, guid
+                $TSEnvAppList = Get-PSDWizardTSEnvListProperty 'Applications'
+                If($null -ne $TSEnvAppList){
+                    $AppGuids = Set-PSDWizardSelectedApplications -InputObject $TSEnvAppList -SelectedApps $_appTabList -Passthru
+                    If($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Applications selected from both tsenv and selection within the PSDWizard: {1}" -f ${CmdletName}, $AppGuids) }
+                }Else{
+                    $AppGuids = Set-PSDWizardSelectedApplications -SelectedApps $_appTabList -Passthru
+                    If($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Applications selected from selection within the PSDWizard: {1}" -f ${CmdletName}, $AppGuids) }
+                }
 
-                $AppGuids = Set-PSDWizardSelectedApplications -InputObject $apps -FieldObject $_appTabList -Passthru
                 $value = $AppGuids
-                #Set-PSDWizardTSEnvProperty $name -Value $value
             }
             elseif ($name -eq 'Summary') {
                 # Do nothing
@@ -581,7 +584,7 @@ function Export-PSDWizardResult {
                     Write-PSDLog -Message ("{0}: TaskSequenceID is empty!!!" -f ${CmdletName})
                     Write-PSDLog -Message ("{0}: Re-Running Wizard, TaskSequenceID must not be empty..." -f ${CmdletName})
                     Show-PSDSimpleNotify -Message ("{0}: No Task Sequence selected, restarting wizard..." -f ${CmdletName})
-                    Show-PSDWizard -ResourcePath "$script:PSDScriptRoot\PSDWizardNew"
+                    Show-PSDWizard -ResourcePath "$(Get-PSDContent -Content "scripts")\PSDWizardNew"
                 }
                 Else {
                     Write-PSDLog -Message ("{0}: TaskSequenceID is now: {1}" -f ${CmdletName}, $value)
@@ -601,12 +604,12 @@ function Set-PSDWizardDefault {
 
     .EXAMPLE
         $Path = 'D:\DeploymentShares\PSD\scripts\PSDWizardNew\Scripts'
-        $PSDWizardContentPath = 'D:\DeploymentShares\PSD\scripts\PSDWizardNew'
-        [string]$LangDefinitionXml = Join-Path -Path $PSDWizardContentPath -ChildPath 'PSDWizard_Definitions_en-US.xml'
-        [string]$ThemeDefinitionXml = Join-Path -Path "$PSDWizardContentPath\Themes" -ChildPath 'Classic_Theme_Definitions_en-US.xml'
+        $ResourcePath = 'D:\DeploymentShares\PSD\scripts\PSDWizardNew'
+        [string]$LangDefinitionXml = Join-Path -Path $ResourcePath -ChildPath 'PSDWizard_Definitions_en-US.xml'
+        [string]$ThemeDefinitionXml = Join-Path -Path "$ResourcePath\Themes" -ChildPath 'Classic_Theme_Definitions_en-US.xml'
         [Xml.XmlDocument]$LangDefinitionXmlDoc = (Get-Content $LangDefinitionXml)
         [Xml.XmlDocument]$ThemeDefinitionXmlDoc = (Get-Content $ThemeDefinitionXml)
-        $XMLContent = Format-PSDWizard -SourcePath $PSDWizardContentPath -LangDefinition $LangDefinitionXmlDoc -ThemeDefinition $ThemeDefinitionXmlDoc
+        $XMLContent = Format-PSDWizard -Path $ResourcePath -LangDefinition $LangDefinitionXmlDoc -ThemeDefinition $ThemeDefinitionXmlDoc
         $Form = Invoke-PSDWizard -ScriptPath $Path -XamlContent $XMLContent -Version "2.0" -Passthru
         $VariablePrefix='TS_'
         Set-PSDWizardDefault -XMLContent $XMLContent -VariablePrefix $VariablePrefix -Form $Form
@@ -639,8 +642,13 @@ function Set-PSDWizardDefault {
                 Set-PSDWizardTSEnvProperty 'OSDComputerName' -Value $value
             }
             elseif ($name -eq 'Applications') {
-                $apps = Get-PSDWizardTSEnvProperty $name -WildCard
-                $AppGuids = Get-PSDWizardSelectedApplications -InputObject $apps -FieldObject $_appTabList -Identifier "Name" -Passthru
+                $TSEnvAppList = Get-PSDWizardTSEnvProperty 'Applications' -WildCard
+                If($null -ne $TSEnvAppList){
+                    $AppGuids = Set-PSDWizardSelectedApplications -InputObject $TSEnvAppList -SelectedApps $_appTabList -Identifier "Name" -Passthru
+                }Else{
+                    $AppGuids = Set-PSDWizardSelectedApplications -SelectedApps $_appTabList -Identifier "Name" -Passthru
+                }
+
                 $value = $AppGuids
             }
             elseif ($name -eq 'Summary') {
@@ -649,150 +657,16 @@ function Set-PSDWizardDefault {
             else {
                 $control.Text = $value
             }
+
             if ($PSDDeBug -eq $true -and $value) { Write-PSDLog -Message ("{0}: [{1}] is set to [{2}]" -f ${CmdletName}, $control.Name, $value) -LogLevel 1 }
             If ($Passthru) { (Get-PSDWizardTSEnvProperty $name) }
         }
-        Catch {}
+        Catch {
+            Write-PSDLog -Message ("{0}: Unable to set default value for [{1}]: {2}" -f ${CmdletName}, $_.Name, $_.Exception.Message) -LogLevel 3
+        }
     }
 }
 #endregion
-
-
-#region FUNCTION: Invoke-PSDWizard
-Function Invoke-PSDWizardRS {
-<#
-    .SYNOPSIS
-        Show the splash screen for the wizard
-
-    .EXAMPLE
-        Show-PSDWizardSplashScreen
-    #>
-    [CmdletBinding()]
-    Param(
-        [parameter(Mandatory = $true)]
-        $XamlContent,
-        [string]$ScriptPath = $script:PSDScriptRoot,
-        [string]$Version,
-        [string]$DefaultLocale = 'en-US',
-        [string]$DefaultTimeZone = 'Pacific Standard Time',
-        [switch]$LogDebug = $PSDDeBug,
-        [switch]$Passthru
-    )
-
-    [string]${CmdletName} = $MyInvocation.MyCommand
-    Write-PSDLog -Message ("{0}: PSDWizard started" -f ${CmdletName})
-
-    # build a hash table with locale data to pass to runspace
-    $PSDWizardHash = [hashtable]::Synchronized(@{})
-    $PSDRunSpace =[runspacefactory]::CreateRunspace()
-    $PSDWizardHash.Runspace = $PSDRunSpace
-    $PSDWizardHash.xaml = $XamlContent
-    $PSDWizardHash.scriptPath = $ScriptPath
-    $PSDWizardHash.language = $DefaultLocale
-    $PSDWizardHash.timeZone = $DefaultTimeZone
-    $PSDWizardHash.version = $Version
-    $PSDWizardHash.isLoaded = $False
-    #build runspace
-    $PSDRunSpace.ApartmentState = "STA"
-    $PSDRunSpace.ThreadOptions = "ReuseThread"
-    $PSDRunSpace.Open() | Out-Null
-    $PSDRunSpace.SessionStateProxy.SetVariable("PSDWizardHash",$PSDWizardHash)
-    $Script:Pwshell = [PowerShell]::Create().AddScript({
-        
-        [xml]$xaml = $PSDWizardHash.xaml -replace 'mc:Ignorable="d"','' -replace "x:N",'N' -replace '^<Win.*', '<Window'
-        $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
-        $PSDWizardHash.window = [Windows.Markup.XamlReader]::Load($reader)
-
-        #===========================================================================
-        # Store Form Objects In PowerShell
-        #===========================================================================
-        $xaml.SelectNodes("//*[@Name]") | %{ 
-            $PSDWizardHash."$($_.Name)" = $PSDWizardHash.Window.FindName($_.Name)
-            if ($PSDWizardHash.LogDebug -eq $true) { Write-PSDLog -Message ("{0}: Creating wizard variable: {1}" -f ${CmdletName}, $PSDWizardHash."$($_.Name)") }
-        }
-        
-        $PSDWizardHash.Window.WindowState = $WindowState
-        $PSDWizardHash.Window.Width = $Width
-        $PSDWizardHash.Window.Background = $WindowBackground
-
-        # INNER  FUNCTIONS
-        #Closes UI objects and exits (within runspace)
-        Function Close-PSDWizardRS
-        {
-            if ($PSDWizardHash.hadCritError) { Write-Host -Message "Background thread had a critical error" -ForegroundColor red }
-            #if runspace has not errored Dispose the UI
-            if (!($PSDWizardHash.isClosing)) { $PSDWizardHash.Window.Close() | Out-Null }
-        }
-
-        $PSDWizardHash.TSEnv = Get-PSDWizardTSEnvProperty -Name *
-        #add title to window and version label
-        $PSDWizardHash.Window.Title = "PSD Wizard " + $Version
-        $PSDWizardHash._wizVersion.Content = $Version
-
-        #add logo if found
-        If ($LogoPath = ($PSDWizardHash.TSEnv | Where Name -eq "PSDWizardLogo"))
-        {
-            If(Test-Path $LogoPath.Value){
-                If($PSDWizardHash._wizMainLogo){$PSDWizardHash._wizMainLogo.Source = $LogoPath.Value}
-                If($PSDWizardHash._wizBeginLogo){$PSDWizardHash._wizBeginLogo.Source = $LogoPath.Value}
-            }
-        }
-
-        #Allow UI to be dragged around screen
-        If ($PSDWizardHash.Window.WindowStyle -eq 'None')
-        {
-            $PSDWizardHash.Window.Add_MouseLeftButtonDown( {
-                $PSDWizardHash.Window.DragMove()
-            })
-        }
-
-        #hide the back button on startup
-        $PSDWizardHash._wizBack.Visibility = 'hidden'
-        
-        #hide the debug button all times until ready
-        $PSDWizardHash._wizDebugConsole.Visibility = 'hidden'
-        
-        #Add smooth closing for Window
-        $PSDWizardHash.Window.Add_Loaded({ $PSDWizardHash.isLoaded = $True })
-    	$PSDWizardHash.Window.Add_Closing({ $PSDWizardHash.isClosing = $True; Close-PSDWizardRS })
-    	$PSDWizardHash.Window.Add_Closed({ $PSDWizardHash.isClosed = $True })
-
-        #always force windows on bottom
-        $PSDWizardHash.Window.Topmost = $False
-
-        $PSDWizardHash.Window.ShowDialog()
-        #$PSDRunspace.Close()
-        #$PSDRunspace.Dispose()
-        $PSDWizardHash.Error = $Error
-    }) # end scriptblock
-
-    #collect data from runspace
-    $Data = $PSDWizardHash
-
-    #invoke scriptblock in runspace
-    $Script:Pwshell.Runspace = $PSDRunSpace
-    $AsyncHandle = $Script:Pwshell.BeginInvoke()
-
-    #cleanup registered object
-    Register-ObjectEvent -InputObject $PSDWizardHash.Runspace `
-            -EventName 'AvailabilityChanged' `
-            -Action {
-
-                    if($Sender.RunspaceAvailability -eq "Available")
-                    {
-                        $Sender.Closeasync()
-                        $Sender.Dispose()
-                        # Speed up resource release by calling the garbage collector explicitly.
-                        # Note that this will pause *all* threads briefly.
-                        [GC]::Collect()
-                    }
-
-                } | Out-Null
-
-    If($Data.Error){Write-PSDLog -Message ("{0}: PSDWizard errored: {1}" -f ${CmdletName}, $Data.Error) -LogLevel 3}
-    Else{Write-PSDLog -Message ("{0}: PSDWizard closed" -f ${CmdletName})}
-    If($PassThru){Return $Data}
-}
 
 #region FUNCTION: Invoke-PSDWizard
 Function Invoke-PSDWizard {
@@ -802,7 +676,7 @@ Function Invoke-PSDWizard {
 
     .EXAMPLE
         $XamlContent = $script:Xaml.OuterXml
-        $ScriptPath = $script:PSDScriptRoot
+        $ScriptPath = (Get-PSDContent scripts)
         $Version = 'v2'
         $Form = Invoke-PSDWizard -ScriptPath $ScriptPath -XamlContent $XMLContent -Version $Version -Passthru
     #>
@@ -913,7 +787,7 @@ Function Invoke-PSDWizard {
         }
 
         <#TODO: Need PSDDomainJoin.ps1 to enable feature
-        If('PSDDomainJoin.ps1' -notin $script:PSDScriptRoot){
+        If('PSDDomainJoin.ps1' -notin (Get-PSDContent -Content "Scripts" -Passthru)){
             $NetworkSelectionAvailable = $false
             Get-PSDWizardElement -Name "JoinDomain" -Wildcard | Set-PSDWizardElement -Visible:$False
         }
@@ -1014,7 +888,7 @@ Function Invoke-PSDWizard {
         }
         #add the entire list of Systemlocale and preselect the one from CustomSettings.ini (if exists)
         If ($_locTabSystemLocale.GetType().Name -eq 'ComboBox')
-        {   
+        {
             Add-PSDWizardComboList -InputObject $Global:PSDWizardLanguageList -ListObject $_locTabSystemLocale -Identifier 'Name' -PreSelect $SystemLocale.Name
         }
 
@@ -1116,13 +990,18 @@ Function Invoke-PSDWizard {
     }
     ElseIf( $TS_TaskSequenceID.Text -in $Global:TaskSequencesList.ID )
     {
-        #If no Task sequence pageexist just process whats in CS.ini
+        #If no Task sequence page exist just process whats in CS.ini
         #validate OS GUID exists in OS list
         $TSAssignedOSGUID = Get-PSDWizardTSData -TS $TS_TaskSequenceID.Text -DataSet OSGUID
 
-        $Global:OSSupportedLanguages = @(($Global:OperatingSystemList | Where-Object { $_.Guid -eq $TSAssignedOSGUID }).Language)
-        #Get only available locales settings from Select OS
-        $Global:OSLanguageList = $Global:PSDWizardLanguageList | Where-Object { $_.Culture -in $Global:OSSupportedLanguages } | Select-Object -Unique
+        If($Null -ne $TSAssignedOSGUID){
+            $Global:OSSupportedLanguages = @(($Global:OperatingSystemList | Where-Object { $_.Guid -eq $TSAssignedOSGUID }).Language)
+            #Get only available locales settings from Select OS
+            $Global:OSLanguageList = $Global:PSDWizardLanguageList | Where-Object { $_.Culture -in $Global:OSSupportedLanguages } | Select-Object -Unique
+        }Else{
+            If($PSDDeBug -eq $true){Write-PSDLog -Message ("{0}: SELECTED TS: Unable to get Local from from Task Sequence ID [{1}]" -f ${CmdletName}, $TS_TaskSequenceID.Text) -LogLevel 3}
+        }
+
     }
     #endregion
 
@@ -1237,6 +1116,7 @@ Function Invoke-PSDWizard {
                     Else {
                         Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$False
                         Invoke-PSDWizardNotification -Message 'Invalid TS: No OS found!' -OutputObject $_tsTabValidation -Type Error
+                        If($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: DEFAULT TREE ITEM: No OS found for task sequence: {1}. Validate the Task sequence Install Operating System step and restart" -f ${CmdletName}, $TaskSequenceID) }
                     }
                 })
         }
@@ -1264,6 +1144,7 @@ Function Invoke-PSDWizard {
                     Else {
                         Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$False
                         Invoke-PSDWizardNotification -Message 'Invalid TS: No OS found!' -OutputObject $_tsTabValidation -Type Error
+                        If($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: DEFAULT LIST ITEM: No OS found for task sequence: {1}. Validate the Task sequence Install Operating System step and restart" -f ${CmdletName}, $TaskSequenceID) }
                     }
                 })
         }
@@ -1361,7 +1242,7 @@ Function Invoke-PSDWizard {
 
         $Global:OSDDiskIndex = Get-PSDWizardTSEnvProperty -Name "OSDDiskIndex" -ValueOnly
         #$Global:WmiVolumes = Get-WMIObject Win32_LogicalDisk | Foreach-Object { Get-WmiObject -Query "Associators of {Win32_LogicalDisk.DeviceID='$($_.DeviceID)'} WHERE ResultRole=Antecedent" | Select *}
-        
+
         #populate the list boxes for the disks and volumes
         $_lstDisks.ItemsSource = @($Global:Disks | Sort DiskNumber | Select Number,FriendlyName,PartitionStyle,
                                         @{Name="Model";Expression={($Global:PhysicalDisks | Where-Object DeviceID -eq $_.Number).Model}},
@@ -1375,8 +1256,8 @@ Function Invoke-PSDWizard {
                                         @{Name="Size";Expression={([math]::round($_.Size /1Gb, 2)).ToString() + ' GB'}},
                                         @{Name="SizeRemaining";Expression={([math]::round($_.SizeRemaining /1Gb, 2)).ToString() + ' GB'}})
 
-        [System.Windows.RoutedEventHandler]$Script:OnVolumeListChanged = {   
-            
+        [System.Windows.RoutedEventHandler]$Script:OnVolumeListChanged = {
+
             if ($PSDDeBug) { Write-PSDLog -Message ("{0}: Selected Volume Index item: {1}" -f ${CmdletName}, ($this.SelectedItem).DriveLetter) -LogLevel 1 }
             # Create a hash table to store values
             $VolDataSet = @{}
@@ -1393,7 +1274,7 @@ Function Invoke-PSDWizard {
             # Create the Chart
             # Set the image source
             Add-Type -AssemblyName System.Windows.Forms,System.Windows.Forms.DataVisualization
-        
+
             #Create our chart object
             $Chart = New-object System.Windows.Forms.DataVisualization.Charting.Chart
             $Chart.Width = 200
@@ -1423,13 +1304,13 @@ Function Invoke-PSDWizard {
             $Title = new-object System.Windows.Forms.DataVisualization.Charting.Title
             $Chart.Titles.Add($Title)
             $Chart.Titles[0].Text = ('Volume Usage for: {0}' -f ($this.SelectedItem).DriveLetter)
-            
+
             $File = ($env:Temp + '\' + ($this.SelectedItem).DriveLetter + '_' + $(Get-Date -format "yyyyMMdd_hhmmsstt") + '.png')
             $Chart.SaveImage($File, "PNG")
             if ($PSDDeBug) { Write-PSDLog -Message ("{0}: Pie chart image path is now: {1}" -f ${CmdletName}, $File)}
-        
+
             $_imgPieChart.Source = $File
-            
+
             $Chart.Dispose()
         }
 
@@ -1451,17 +1332,17 @@ Function Invoke-PSDWizard {
 
         #Add an event to the text box to enable the next button if text if populated
         [System.Windows.RoutedEventHandler]$Script:OnTargetDiskTextChanged = {
-            
+
             if ($PSDDeBug) { Write-PSDLog -Message ("{0}: OSDDiskIndex value is now: {1}" -f ${CmdletName}, $TS_OSDDiskIndex.Text) -LogLevel 1 }
 
-            If ( $TS_OSDDiskIndex.Text -in $Global:Disks.Number) {            
+            If ( $TS_OSDDiskIndex.Text -in $Global:Disks.Number) {
                 Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$True
             }Else{
                 Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$False
             }
         }
 
-        [System.Windows.RoutedEventHandler]$Script:OnTargetDiskChanged = {  
+        [System.Windows.RoutedEventHandler]$Script:OnTargetDiskChanged = {
             $TS_OSDDiskIndex.Text = $this.SelectedItem
             if ($PSDDeBug) { Write-PSDLog -Message ("{0}: Selected Target Disk Index item: {1}" -f ${CmdletName}, $this.SelectedItem) -LogLevel 1 }
         }
@@ -1475,7 +1356,7 @@ Function Invoke-PSDWizard {
             Add-PSDWizardComboList -InputObject $Global:Disks -ListObject $_cmbTargetDisk -Identifier 'Number' -PreSelectIndex $Global:PreSelectValue
         }
         If ( $_cmbTargetDisk.GetType().Name -eq 'ListBox') {
-            
+
             #Add the list to the list box
             Add-PSDWizardList -InputObject $Global:Disks -ListObject $_cmbTargetDisk -Identifier 'Number' -PreSelectIndex $Global:PreSelectValue
         }
@@ -1490,7 +1371,7 @@ Function Invoke-PSDWizard {
         If ($_.source.name -eq '_JoinDomainRadio')
         {
             if ($PSDDeBug) { Write-PSDLog -Message ("{0}: Checked JoinDomain radio button" -f ${CmdletName}) -LogLevel 1 }
-            
+
             #remove workgroup value
             Get-PSDWizardElement -Name "TS_JoinWorkgroup" | Set-PSDWizardElement -Text $null
             #Remove-PSDWizardTSEnvProperty -Name "JoinWorkGroup"
@@ -1623,14 +1504,14 @@ Function Invoke-PSDWizard {
         #get list from customsettings.ini
         #make the list global so it can be used in the page load script block
         $Global:DeviceRoleList = Get-PSDWizardTSEnvListProperty -Name "DeviceRole" -ValuesOnly #| Sort -Unique
-        
+
         If($Global:DeviceRoleList.count -gt 0){
             Write-PSDLog -Message ("DeviceRole list values are: " + ($Global:DeviceRoleList -join ', '))
 
             #Add an event to the text box to enable the next button if text if populated
             [System.Windows.RoutedEventHandler]$Script:OnDeviceRoleTextChanged = {
                 if ($PSDDeBug) { Write-PSDLog -Message ("{0}: DeviceRole value is now: {1}" -f ${CmdletName}, $TS_DeviceRole.Text) -LogLevel 1 }
-                
+
                 If ($TS_DeviceRole.Text -in $Global:DeviceRoleList) {
                     Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$True
                 }Else{
@@ -1638,13 +1519,13 @@ Function Invoke-PSDWizard {
                 }
             }
 
-            [System.Windows.RoutedEventHandler]$Script:OnDeviceRoleChanged = {  
+            [System.Windows.RoutedEventHandler]$Script:OnDeviceRoleChanged = {
                 $TS_DeviceRole.Text = $this.SelectedItem
                 if ($PSDDeBug) { Write-PSDLog -Message ("{0}: Selected Intune Group item: {1}" -f ${CmdletName}, $this.SelectedItem) -LogLevel 1 }
             }
 
             If ( $_cmbDeviceRole.GetType().Name -eq 'ComboBox') {
-                $_cmbDeviceRole.AddHandler([System.Windows.Controls.ComboBox]::SelectionChangedEvent, $OnDeviceRoleChanged) 
+                $_cmbDeviceRole.AddHandler([System.Windows.Controls.ComboBox]::SelectionChangedEvent, $OnDeviceRoleChanged)
             }
 
             #Add the event to the list box
@@ -1673,7 +1554,7 @@ Function Invoke-PSDWizard {
             if ($PSDDeBug) { Write-PSDLog -Message ("{0}: DeviceRole list is null: {1}" -f ${CmdletName}) -LogLevel 2 }
             Get-PSDWizardElement -Name "_wizDeviceRole" | Set-PSDWizardElement -visible:$False
         }
-        
+
     }
     #endregion
 
@@ -1682,28 +1563,28 @@ Function Invoke-PSDWizard {
         #get list from customsettings.ini
         #make the list global so it can be used in the page load script block
         $Global:IntuneGroupList = Get-PSDWizardTSEnvListProperty -Name "IntuneGroup" -ValuesOnly #| Sort -Unique
-        
+
         If($Global:IntuneGroupList.count -gt 0){
             Write-PSDLog -Message ("IntuneGroup list values are: " + ($Global:IntuneGroupList -join ', '))
             #Add an event to the text box to enable the next button if text if populated
             [System.Windows.RoutedEventHandler]$Script:OnIntuneGroupTextChanged = {
                 if ($PSDDeBug) { Write-PSDLog -Message ("{0}: IntuneGroup value is now: {1}" -f ${CmdletName}, $TS_IntuneGroup.Text) -LogLevel 1 }
-                
-                If ( $TS_IntuneGroup.Text -in $Global:IntuneGroupList) {            
+
+                If ( $TS_IntuneGroup.Text -in $Global:IntuneGroupList) {
                     Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$True
                 }Else{
                     Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$False
                 }
             }
 
-            [System.Windows.RoutedEventHandler]$Script:OnIntuneGroupChanged = {  
+            [System.Windows.RoutedEventHandler]$Script:OnIntuneGroupChanged = {
                 $TS_IntuneGroup.Text = $this.SelectedItem
                 if ($PSDDeBug) { Write-PSDLog -Message ("{0}: Selected Intune Group item: {1}" -f ${CmdletName}, $this.SelectedItem) -LogLevel 1 }
             }
-            
+
 
             If ( $_cmbIntuneGroup.GetType().Name -eq 'ComboBox') {
-                $_cmbIntuneGroup.AddHandler([System.Windows.Controls.ComboBox]::SelectionChangedEvent, $OnIntuneGroupChanged) 
+                $_cmbIntuneGroup.AddHandler([System.Windows.Controls.ComboBox]::SelectionChangedEvent, $OnIntuneGroupChanged)
             }
 
             #Add the event to the list box
@@ -1725,7 +1606,7 @@ Function Invoke-PSDWizard {
                 Add-PSDWizardList -InputObject $Global:IntuneGroupList -ListObject $_cmbIntuneGroup
             }
 
-            
+
             #Add the event to the text box
             $TS_IntuneGroup.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, $OnIntuneGroupTextChanged)
         }Else{
@@ -1741,7 +1622,7 @@ Function Invoke-PSDWizard {
         #Event for language install selection
         [System.Windows.RoutedEventHandler]$Script:OnLanguageSelection = {
 
-            
+
             If($Global:CurrentLanguageSelected -ne $this.SelectedItem){
                 if($PSDDeBug) { Write-PSDLog -Message ("{0}: Selected Language locale item: {1}" -f ${CmdletName}, $this.SelectedItem) -LogLevel 1 }
                 #Use ConvertTo-PSDWizardTSVar cmdlet instead of where operator for debugging
@@ -1765,10 +1646,10 @@ Function Invoke-PSDWizard {
         #Event for locale system selection
         [System.Windows.RoutedEventHandler]$Script:OnSystemLocaleSelection = {
 
-           
+
             If($Global:CurrentSystemLocaleSelected -ne $this.SelectedItem){
                 if ($PSDDeBug) { Write-PSDLog -Message ("{0}: Selected System locale item: {1}" -f ${CmdletName}, $this.SelectedItem) -LogLevel 1 }
-            
+
                 #Use ConvertTo-PSDWizardTSVar cmdlet instead of where operator for debugging
                 $MappedLocale = (ConvertTo-PSDWizardTSVar -Object $Global:PSDWizardLanguageList -InputValue $this.SelectedItem -MappedProperty 'Name' -SelectedProperty 'Culture')
                 #$MappedLocale = ($Global:PSDWizardLanguageList | Where-Object { $_.Name -eq $_locTabSystemLocale.SelectedItem }) | Select-Object -ExpandProperty Culture
@@ -1794,7 +1675,7 @@ Function Invoke-PSDWizard {
         [System.Windows.RoutedEventHandler]$Script:OnKeyboardLocaleSelection = {
 
             if ($PSDDeBug) { Write-PSDLog -Message ("{0}: Selected Keyboard locale item: {1}" -f ${CmdletName}, $this.SelectedItem) -LogLevel 1 }
-            
+
             #Use ConvertTo-PSDWizardTSVar cmdlet instead of where operator for debugging
             #If($Global:CurrentKeyboardLocaleSelected -ne $this.SelectedItem){
                 $MappedKeyboard = (ConvertTo-PSDWizardTSVar -Object $Global:PSDWizardLanguageList -InputValue $this.SelectedItem -MappedProperty 'Name' -SelectedProperty 'KeyboardLayout')
@@ -1823,7 +1704,7 @@ Function Invoke-PSDWizard {
         [System.Windows.RoutedEventHandler]$Script:OnTimeZoneSelection = {
 
             if ($PSDDeBug) { Write-PSDLog -Message ("{0}: Selected TimeZone item: {1}" -f ${CmdletName}, $this.SelectedItem) -LogLevel 1 }
-            
+
             #If($Global:CurrentTimeZoneSelected -ne $this.SelectedItem){
                 $MappedTimeZone = (ConvertTo-PSDWizardTSVar -Object $Global:PSDWizardTimeZoneIndex -InputValue $this.SelectedItem -MappedProperty 'TimeZone')
                 #$MappedTimeZone = $Global:PSDWizardTimeZoneIndex | Where-Object { $_.TimeZone -eq $_locTabTimeZoneName.SelectedItem } | Select-Object -first 1
@@ -1846,7 +1727,7 @@ Function Invoke-PSDWizard {
         [System.Windows.RoutedEventHandler]$Script:OnLocaleSelection = {
 
             if ($PSDDeBug) { Write-PSDLog -Message ("{0}: Selected Language locale item: {1}" -f ${CmdletName}, $this.SelectedItem) -LogLevel 1 }
-            
+
             #check if global value is different from the current selection
             #this will change as the user selects different values
             #If($Global:CurrentLanguageSelected -ne $this.SelectedItem){
@@ -1942,14 +1823,14 @@ Function Invoke-PSDWizard {
             })
 
         $_appTabList.Add_SelectionChanged( {
-            $Apps = @()
-            $Apps += $this.SelectedItems -join "`n"
+            $AppList = @()
+            $AppList += $this.SelectedItems -join "`n"
 
             #$_appTabList.items
             # Grab all selected apps a output as a list  like string (viewable by wizard summary)
             # We don't need to process each one with its own variables (eg. Application001, Applications002, etc),
             # the Export-PSDWizardResult cmdlet does that
-            $TS_Applications.text = ($Apps | Select-Object -Unique)
+            $TS_Applications.text = ($AppList | Select-Object -Unique)
             #endregion
         })
 
@@ -1999,7 +1880,7 @@ Function Invoke-PSDWizard {
     $CustomPanes = $_wizTabControl.items.Name -match '_wizCustomPane'
     If($CustomPanes.count -gt 0)
     {
-        $CustomScriptPath = "$script:PSDResourceRoot\CustomScripts"
+        $CustomScriptPath = (Get-PSDContent -Content 'PSDResources\CustomScripts')
 
         Foreach($CustomPane in $CustomPanes)
         {
@@ -2056,7 +1937,7 @@ Function Invoke-PSDWizard {
                         $MaxChecks=4
                         #$ReadinessPath = "X:\Deploy\Readiness"
                         $ReadinessScript = Get-PSDWizardTSEnvProperty -Name 'PSDReadinessScript' -ValueOnly
-                        $ReadinessPath = "$script:PSDResourceRoot\Readiness"
+                        $ReadinessPath = (Get-PSDContent -Content 'PSDResources\Readiness')
                         $RunChecks = $true
 
                         If(Test-Path "$ReadinessPath\$ReadinessScript")
@@ -2189,6 +2070,7 @@ Function Invoke-PSDWizard {
                         Else {
                             Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$False
                             Invoke-PSDWizardNotification -Message 'Invalid TS: No OS found!' -OutputObject $_tsTabValidation -Type Error
+                            If($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: ON PAGE LOAD: No OS found for task sequence: {1}. Validate the Task sequence Install Operating System step and restart" -f ${CmdletName}, $TaskSequenceID) }
                         }
                     }
                     Else {
@@ -2198,7 +2080,7 @@ Function Invoke-PSDWizard {
                 }
 
                 '_wizTargetDisk' {
-                    
+
                     Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$False
 
                     #hide the text box if not in debug mode
@@ -2207,12 +2089,12 @@ Function Invoke-PSDWizard {
                     $_lstVolumes.AddHandler([System.Windows.Controls.ListView]::SelectionChangedEvent, $OnVolumeListChanged)
                     $_lstDisks.AddHandler([System.Windows.Controls.ListView]::SelectionChangedEvent, $OnDiskListChanged)
                     $TS_OSDDiskIndex.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, $OnTargetDiskTextChanged)
-                    
+
                     #set the text box to the preselected value
                     If([string]::IsNullOrEmpty($TS_OSDDiskIndex.Text)){
                         $TS_OSDDiskIndex.Text = $Global:PreSelectValue
                     }
- 
+
                     #Add the event to the combo box
                     If ( $_cmbTargetDisk.GetType().Name -eq 'ComboBox') {
                         $_cmbTargetDisk.AddHandler([System.Windows.Controls.ComboBox]::SelectionChangedEvent, $OnTargetDiskChanged)
@@ -2221,16 +2103,16 @@ Function Invoke-PSDWizard {
                     If ( $_cmbTargetDisk.GetType().Name -eq 'ListBox') {
                         $_cmbTargetDisk.AddHandler([System.Windows.Controls.ListBox]::SelectionChangedEvent, $OnTargetDiskChanged)
                     }
-                    
+
 
                     #set the next button to disabled until a selection is made
                     #Write-PSDLog -Message ("OSDDiskIndex value is now: " + $TS_OSDDiskIndex.Text)
-                    If ( -not([string]::IsNullOrEmpty($TS_OSDDiskIndex.Text))) {            
+                    If ( -not([string]::IsNullOrEmpty($TS_OSDDiskIndex.Text))) {
                         Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$True
                     }Else{
                         Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$False
                     }
-                    
+
                 }
 
                 '_wizComputerName' {
@@ -2315,7 +2197,7 @@ Function Invoke-PSDWizard {
                     #RUN EVENTS ON PAGE LOAD
                     #Check what value is provided by computer name and rebuild it based on supported variables
                     # Any variables declared in CustoSettings.ini are supported + variables with %SERIAL% or %RAND%
-                    $TS_OSDComputerName.Text = (Get-PSDWizardComputerName -InputString (Get-PSDWizardTSEnvProperty 'OSDComputerName' -ValueOnly))
+                    $TS_OSDComputerName.Text = (Get-PSDWizardComputerName -Value (Get-PSDWizardTSEnvProperty 'OSDComputerName' -ValueOnly))
 
                     $ValidName = (Confirm-PSDWizardComputerName -ComputerNameObject $TS_OSDComputerName -OutputObject $_detTabValidation -Passthru)
                     Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$ValidName
@@ -2385,7 +2267,7 @@ Function Invoke-PSDWizard {
 
                     $CustomPaneScript = ($this.SelectedItem.Name).replace('_wizCustomPane','PSDWizard') + '.ps1'
                     #$CustomPaneScript = (Get-PSDWizardTSEnvProperty -Name ($this.SelectedItem.Name).replace('_wizCustomPane','PSDWizard') -ValueOnly)
-                    $CustomScriptPath = "$script:PSDResourceRoot\CustomScripts"
+                    $CustomScriptPath = (Get-PSDContent -Content 'PSDResources\CustomScripts')
 
                     If(Test-Path "$CustomScriptPath\$CustomPaneScript")
                     {
@@ -2496,7 +2378,7 @@ Function Invoke-PSDWizard {
                     }
                     else{
                     Write-PSDLog -Message ("IntuneGroup value is now: " + $TS_IntuneGroup.Text)
-                        If ( $TS_IntuneGroup.Text -in $Global:IntuneGroupList) {            
+                        If ( $TS_IntuneGroup.Text -in $Global:IntuneGroupList) {
                             Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$True
                         }Else{
                             Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$False
@@ -2532,7 +2414,7 @@ Function Invoke-PSDWizard {
                 } #end Admin creds switch value
 
                 '_wizLocaleTime' {
-                    
+
                     #get mapped data of current UILanguage from CustomSettings.ini
                     If($Global:OSLanguageList.Culture.count -eq 1){
                         $SelectedUILanguage = $Global:OSLanguageList
@@ -2553,13 +2435,13 @@ Function Invoke-PSDWizard {
                             Add-PSDWizardList -InputObject $Global:OSLanguageList -ListObject $_locTabLanguage -Identifier 'Name' -PreSelect $SelectedUILanguage.Name
                         }
                     }
-                    
+
                     <#
                     If($Global:CurrentLanguageSelected -ne $SelectedUILanguage.Culture){
                         #choose default (non selecteditem)
                         $TS_UILanguage.Text = (ConvertTo-PSDWizardTSVar -Object $Global:OSLanguageList -InputValue $Global:CurrentLanguageSelected -MappedProperty 'Name' -SelectedProperty 'Culture' -DefaultValueOnNull $SelectedUILanguage.Culture)
                     }
-                    #> 
+                    #>
                     If ($_locTabLanguage.GetType().Name -eq 'ComboBox') {
                         $_locTabLanguage.AddHandler([System.Windows.Controls.ComboBox]::SelectionChangedEvent, $OnLanguageSelection)
                     }
@@ -2569,12 +2451,12 @@ Function Invoke-PSDWizard {
                     #Load eventhandler so value is changed when selection change
                     $_locTabSystemLocale.AddHandler([System.Windows.Controls.ComboBox]::SelectionChangedEvent, $OnSystemLocaleSelection)
                     $_locTabKeyboardLocale.AddHandler([System.Windows.Controls.ComboBox]::SelectionChangedEvent, $OnKeyboardLocaleSelection)
-                    $_locTabTimeZoneName.AddHandler([System.Windows.Controls.ComboBox]::SelectionChangedEvent, $OnTimeZoneSelection)                  
+                    $_locTabTimeZoneName.AddHandler([System.Windows.Controls.ComboBox]::SelectionChangedEvent, $OnTimeZoneSelection)
 
                 } #end locale and time switch value
 
                 '_wizLanguage' {
-                    
+
 
                     #get mapped data of current UILanguage from CustomSettings.ini
                     If($Global:OSLanguageList.Culture.count -eq 1){
@@ -2596,7 +2478,7 @@ Function Invoke-PSDWizard {
                             Add-PSDWizardList -InputObject $Global:OSLanguageList -ListObject $_locTabLanguage -Identifier 'Name' -PreSelect $SelectedUILanguage.Name
                          }
                     }
-                    
+
                     <#
                     If($Global:CurrentLanguageSelected -ne $SelectedUILanguage.Culture){
                         #choose default (non selecteditem)
@@ -2776,8 +2658,8 @@ Function Invoke-PSDWizard {
             #Allow F5 to refresh wizard content
             'F5' {
                 #redownload control content
-                $null = $script:PSDContentRoot
-                
+                $null = Get-PSDContent -Content 'control'
+
                 If('_wizTaskSequence' -in $_wizTabControl.items.Name )
                 {
                     If($PSDDebug -eq $false){ Write-PSDLog -Message ("{0}: F5 Key was hit. Refreshing Task sequences" -f ${CmdletName})}
@@ -2973,7 +2855,7 @@ Function Show-PSDWizardSplashScreen {
         # Store Form Objects In PowerShell
         #===========================================================================
         $xaml.SelectNodes("//*[@Name]") | %{ $syncHash."$($_.Name)" = $syncHash.Window.FindName($_.Name)}
-        
+
         $syncHash.Window.WindowState = $WindowState
         $syncHash.Window.Width = $Width
         $syncHash.Window.Background = $WindowBackground
@@ -2989,7 +2871,7 @@ Function Show-PSDWizardSplashScreen {
 
         #Add smooth closing for Window
         $syncHash.Window.Add_Loaded({ $syncHash.isLoaded = $True })
-    	$syncHash.Window.Add_Closing({ $syncHash.isClosing = $True; Close-PSDWizardSplashScreen })
+    	$syncHash.Window.Add_Closing({ $syncHash.isClosing = $True; Close-PSDStartLoader })
     	$syncHash.Window.Add_Closed({ $syncHash.isClosed = $True })
 
         #always force windows on bottom
@@ -3029,8 +2911,8 @@ Function Show-PSDWizardSplashScreen {
     Return $Data
 }
 
-#region FUNCTION: close splashscreen from runspace
-function Close-PSDWizardSplashScreen
+#region FUNCTION: close a runspace screen
+function Close-PSDWizardRunspaceScreen
 {
     Param (
         [Parameter(Mandatory=$true, Position=1,ValueFromPipeline=$true,ValueFromPipelineByPropertyName=$true)]
@@ -3160,243 +3042,303 @@ function Update-PSDWizardProgressBar
 }
 #endregion
 
-
-#region FUNCTION: Show-PSDWizard
-Function Show-PSDWizard {
+Function Show-PSDWizardProfileScreen {
     <#
     .SYNOPSIS
-        Start the wizard
+        Show the splash screen for the wizard preselection screen
 
     .EXAMPLE
-        $PSDWizardContentPath = $script:PSDWizardContentPath
-        $Language = 'en-US'
-        $Theme = 'Classic'
-        Show-PSDWizard -PSDWizardContentPath $PSDWizardContentPath -Language $Language -Theme $Theme
+        Show-PSDWizardProfileScreen
     #>
     [CmdletBinding()]
     Param(
-        [Parameter(Mandatory = $true, Position = 0)]
-        [Alias('XamlPath','ResourcePath')]
-        [string]$PSDWizardContentPath,
-
-        [Parameter(Mandatory = $false, Position = 1)]
-        [ValidateSet('en-US')]
-        [string]$Language = 'en-US',
-
-        [Parameter(Mandatory = $false, Position = 2)]
-        [string]$Theme = 'Classic',
-        
-        [Parameter(Mandatory = $false, Position = 3)]
-        [Alias('ScriptRoot')]
-        [string]$ScriptPath = $script:PSDScriptRoot,
-
-        [Parameter(Mandatory = $false)]
-        $Page,
-
-        [Parameter(Mandatory = $false)]
-        [switch]$AsAsyncJob,
-
-        [Parameter(Mandatory = $false)]
-        [switch]$Passthru,
-
-        [switch]$NoSplashScreen
+        $ProfileList,
+        $ResourcePath = "$script:PSDWizardContentPath\Resources",
+        $OrgName,
+        $LogoPath,
+        $Theme,
+        $Language
     )
 
-    ## Get the name of this function
     [string]${CmdletName} = $MyInvocation.MyCommand
+    Write-PSDLog -Message ("{0}: PSDWizard Profile list started" -f ${CmdletName})
 
-    If($NoSplashScreen -ne $true){
-        $splashScreen = Show-PSDWizardSplashScreen -Theme $Theme -Language $Language
-        Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status "Initializing PSDWizard components..."
-    }
+    # build a hash table with locale data to pass to runspace
+    $syncHash = [hashtable]::Synchronized(@{})
+    $PSDRunSpace =[runspacefactory]::CreateRunspace()
+    $syncHash.Runspace = $PSDRunSpace
+    $syncHash.ProfileList = $ProfileList
+    $syncHash.ResourcePath = $ResourcePath
+    $syncHash.OrgName = $OrgName
+    $syncHash.ImageLogo = $LogoPath
+    $syncHash.Theme = $Theme
+    $syncHash.Language = $Language
+    #build runspace
+    $PSDRunSpace.ApartmentState = "STA"
+    $PSDRunSpace.ThreadOptions = "ReuseThread"
+    $PSDRunSpace.Open() | Out-Null
+    $PSDRunSpace.SessionStateProxy.SetVariable("syncHash",$syncHash)
+    $Script:Pwshell = [PowerShell]::Create().AddScript({
+        [string]$xaml = @"
+<Window x:Class="PSDMDTUI.PSDWizardProfileSelection"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        mc:Ignorable="d"
+        Height="600" Width="800"
+        ResizeMode="NoResize"
+        WindowStyle="None"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False">
+    <Window.Resources>
 
-    $PSDWizardContentPath = $PSDWizardContentPath.TrimEnd('\')
+        <ResourceDictionary>
 
-    #Default to false
-    $Global:WizardDialogResult = $false
-    #Load functions from external file
-    Write-PSDLog -Message ("{0}: Loading PSD Wizard helper script [{1}\PSDWizard.Helper.ps1]" -f ${CmdletName}, $PSDWizardContentPath)
-    If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status "Loading PSDwizard helper file..."}
-    . "$PSDWizardContentPath\PSDWizard.Helper.ps1" -Caller ${CmdletName} -ScriptPath $ScriptPath
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Resources/Colors.xaml" />
+                <ResourceDictionary Source="Resources/Icons.xaml" />
+                <ResourceDictionary Source="Resources/ComboBox_BlackFlatSquareStyle.xaml" />
+                <ResourceDictionary Source="Resources/Button_DarkBlueSquareStyle.xaml" />
+                <ResourceDictionary Source="Resources/Button_LightBlueRoundStyle.xaml" />
+            </ResourceDictionary.MergedDictionaries>
 
-    #parse changelog for version for a more accurate version
-    $ChangeLogPath = Join-Path $PSDWizardContentPath 'CHANGELOG.MD'
-    If (Test-Path $ChangeLogPath)
-    {
-        Write-PSDLog -Message ("{0}: ChangeLog found at [{1}]" -f ${CmdletName}, $ChangeLogPath)
-        $ChangeLog = Get-Content $ChangeLogPath
-        $Changedetails = (($ChangeLog -match '##')[0].TrimStart('##') -split '-').Trim()
-        [string]$MenuVersion = [string]$Changedetails[0]
-        [string]$MenuDate = $Changedetails[1]
-        $VersionTitle = "v$MenuVersion [$MenuDate]"
-    }
-    Else {
-        $VersionTitle = "v2"
-    }
+            <Style TargetType="{x:Type Window}">
+                <Setter Property="FontFamily" Value="Segoe UI" />
+                <Setter Property="FontWeight" Value="Light" />
+                <Setter Property="BorderBrush" Value="Black" />
+                <Setter Property="BorderThickness" Value="0.5" />
+            </Style>
 
-    If ( (Get-PSDWizardTSEnvProperty -Name 'PSDDeBug' -ValueOnly) -eq 'YES') {
-        $PSDDeBug = $true
-    }
-
-    #Set theme in 1 of 3 ways: Parameter, CustomeSettings.ini, Default
-    If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status ("Determining PSDWizard defintion: {0}..." -f $theme)}
-    If ($Theme) {
-        If ( $PSDDeBug -eq $true ) { Write-PSDLog -Message ("{0}: Show-PSDWizard cmdlet was called with Theme parameter, will attempt to use the theme [{1}]" -f ${CmdletName}, $Theme) }
-        $SelectedTheme = $Theme
-    }
-    ElseIf ($ThemeFromCS = Get-PSDWizardTSEnvProperty -Name 'WizardTheme' -ValueOnly) {
-        If ( $PSDDeBug -eq $true ) { Write-PSDLog -Message ("{0}: [WizardTheme] setting found in CustomSetting.ini; will attempt to use the theme [{1}]" -f ${CmdletName}, $ThemeFromCS) }
-        $SelectedTheme = $ThemeFromCS
-    }
-    Else {
-        $SelectedTheme = 'Classic'
-        If ( $PSDDeBug -eq $true ) { Write-PSDLog -Message ("{0}: No theme control was found; defaulting to theme [{1}]" -f ${CmdletName}, $SelectedTheme) }
-    }
-
-    #Build Path to definition files; if file not found, default to en-US version
-    If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status ("Processing PSDWizard language definition: {0}..." -f $Language)}
-    [string]$LangDefinitionXml = Join-Path -Path $PSDWizardContentPath -ChildPath ('PSDWizard_Definitions_' + $Language + '.xml')
-    [string]$ThemeDefinitionXml = Join-Path -Path "$PSDWizardContentPath\Themes" -ChildPath ($SelectedTheme + '_Theme_Definitions_' + $Language + '.xml')
-
-    If ( (Test-Path $LangDefinitionXml) -and (Test-Path $ThemeDefinitionXml) )
-    {
-        [string]$XmlLangDefinitionFile = ('PSDWizard_Definitions_' + $Language + '.xml')
-        [string]$XmlThemeDefinitionFile = ($SelectedTheme + '_Theme_Definitions_' + $Language + '.xml')
-    }
-    Else {
-        Write-PSDLog -Message ("{0}: language definition file [{1}] or theme definitions file [{2}] missing; reverting to defaults" -f ${CmdletName}, ('PSDWizard_Definitions_' + $Language + '.xml'), ($SelectedTheme + '_Theme_Definitions_' + $Language + '.xml')) -LogLevel 2
-        [string]$XmlLangDefinitionFile = 'PSDWizard_Definitions_en-US.xml'
-        [string]$XmlThemeDefinitionFile = 'Classic_Theme_Definitions_en-US.xml'
-    }
-
-    #Rebuild Build path to language and theme definition (if paths aren't found)
-    [string]$LangDefinitionXml = Join-Path -Path $PSDWizardContentPath -ChildPath $XmlLangDefinitionFile
-    [string]$ThemeDefinitionXml = Join-Path -Path "$PSDWizardContentPath\Themes" -ChildPath $XmlThemeDefinitionFile
+        </ResourceDictionary>
 
 
-    #Check again (Incase definition defaulted to en-US and ARE still missing)
-    If ( (Test-Path $LangDefinitionXml) -and (Test-Path $ThemeDefinitionXml) )
-    {
-        #Get content of Defintion file
-        [Xml.XmlDocument]$LangDefinitionXmlDoc = (Get-Content $LangDefinitionXml)
-        [Xml.XmlDocument]$ThemeDefinitionXmlDoc = (Get-Content $ThemeDefinitionXml)
-    }
-    Else {
-        Write-PSDLog -Message ("{0}: language definition file [{1}] or theme definitions file [{2}] not found" -f ${CmdletName}, $LangDefinitionXml, $ThemeDefinitionXml) -LogLevel 3
-        If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -PercentComplete 100 -Status ("language and theme definition file not found") -Color Red}
-        Break
-    }
+    </Window.Resources>
+    <Grid>
+        <Canvas HorizontalAlignment="Left" Height="600" Width="800" VerticalAlignment="Top" Background="Black" Panel.ZIndex="300">
+            <Grid Margin="0" Height="572">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="140*"></RowDefinition>
+                    <RowDefinition Height="56*"></RowDefinition>
+                    <RowDefinition Height="50*"></RowDefinition>
+                    <RowDefinition Height="37*"></RowDefinition>
+                    <RowDefinition Height="40*"></RowDefinition>
+                    <RowDefinition Height="124*"></RowDefinition>
+                    <RowDefinition Height="61*"></RowDefinition>
+                </Grid.RowDefinitions>
 
-    If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status ("Formatting PSDWizard layout...")}
-    #Build the XAML file based on definitions
-    Write-PSDLog -Message ("{0}: Running [Format-PSDWizard -SourcePath {1} -LangDefinition (xml:{2}) -ThemeDefinition (xml:{3})]" -f ${CmdletName}, $PSDWizardContentPath, $XmlLangDefinitionFile, $XmlThemeDefinitionFile)
-    Try{
-        $script:Xaml = Format-PSDWizard -SourcePath $PSDWizardContentPath -LangDefinition $LangDefinitionXmlDoc -ThemeDefinition $ThemeDefinitionXmlDoc
-        If ( $PSDDeBug -eq $true ) {
-            $Logpath = Split-Path $Global:PSDLogPath -Parent
-            $script:Xaml.OuterXml | Out-File "$Logpath\PSDWizardNew_$($SelectedTheme)_$($Language).xaml" -Force
+                <StackPanel Grid.Row="0" Margin="0,10,0,0" HorizontalAlignment="Center" VerticalAlignment="Top" Height="120" Width="120">
+                    <Image x:Name="imgBeginLogo" Height="120" Width="120"/>
+                </StackPanel>
+
+                <TextBlock x:Name="txtOrgName" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="24" Width="800" TextAlignment="Center" FontFamily="Segoe UI Light" Height="64" Foreground="White"/>
+                <TextBlock x:Name="txtMainTitle" Grid.Row="2" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="36" Width="800" TextAlignment="Center" FontFamily="Segoe UI Light" Height="64" Foreground="White"/>
+                <TextBlock x:Name="txtSubTitle" Grid.Row="3" HorizontalAlignment="Center" VerticalAlignment="Top" FontSize="16" FontFamily="Segoe UI Light" Width="800" TextAlignment="Center" Height="26" Foreground="White"/>
+
+                <ComboBox Grid.Row="4" x:Name="CmbProfiles" Margin="210,0,210,0" FontSize="26" />
+
+                <Button Grid.Row="5" x:Name="btnStart" Style="{DynamicResource ButtonLightBlueRound}" Width="380" Height="68" VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <TextBlock Text="Lets get started" FontSize="24" TextWrapping="WrapWithOverflow" TextAlignment="Center"/>
+                </Button>
+
+                <Button Grid.Row="5" x:Name="btnOpenPS" Style="{DynamicResource ButtonDarkBlueSquare}" Width="100" HorizontalAlignment="Right" Margin="0,124,20,10" Grid.RowSpan="2">
+                    <StackPanel Width="91" Height="44">
+                        <Label Content="Open PowerShell" Foreground="White" BorderThickness="0" HorizontalAlignment="Center" FontSize="10" VerticalContentAlignment="Center" />
+                        <Rectangle Width="20" Height="20" Fill="White" HorizontalAlignment="Center">
+                            <Rectangle.OpacityMask>
+                                <VisualBrush Stretch="Fill" Visual="{DynamicResource icons_console}"/>
+                            </Rectangle.OpacityMask>
+                        </Rectangle>
+                    </StackPanel>
+                </Button>
+            </Grid>
+        </Canvas>
+    </Grid>
+</Window>
+"@
+
+        #Load assembies to display UI
+        [void][System.Reflection.Assembly]::LoadWithPartialName('PresentationFramework')
+
+        #change background color based on theme (Not used yet)
+        switch($syncHash.Theme){
+            'Classic' {
+                $BGColor = '#004275'
+                $FGColor = '#ffffff'
+                $WindowState="Normal"
+                $Width='800'
+                $WindowBackground = '#004275'
+            }
+            'Dark' {
+                $BGColor = '#343447'
+                $FGColor = '#A0A0A0'
+                $WindowState="Normal"
+                $Width='800'
+                $WindowBackground = '#004275'
+            }
+            default{
+                $BGColor = '#004275'
+                $FGColor = '#ffffff'
+                $WindowState="Normal"
+                $Width='800'
+                $WindowBackground = '#004275'
+            }
         }
-    }Catch{
-        If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -PercentComplete 100 -Status ("Error formatting PSDWizard") -Color Red}
-        Write-PSDLog -Message ("{0}: Error formatting PSDWizard: {1}" -f ${CmdletName}, $_.Exception.Message) -LogLevel 3
-        Break
-    }
+        $xaml = $xaml -replace 'Background="Black"', "Background=`"$BGColor`""
+        $xaml = $xaml -replace 'Foreground="White"', "Foreground=`"$FGColor`""
+        $xaml = $xaml -replace 'Source="Resources/', "Source=`"$($syncHash.ResourcePath)\"
+        [xml]$xaml = $xaml -replace 'mc:Ignorable="d"','' -replace "x:N",'N' -replace '^<Win.*', '<Window'
+        $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
+        $syncHash.window = [Windows.Markup.XamlReader]::Load($reader)
+        #===========================================================================
+        # Store Form Objects In PowerShell
+        #===========================================================================
+        $xaml.SelectNodes("//*[@Name]") | %{ $syncHash."$($_.Name)" = $syncHash.Window.FindName($_.Name)}
 
-    #load wizard
-    If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status ("Importing PSDWizard content...")}
-    Write-PSDLog -Message ("{0}: Running [Invoke-PSDWizard -ScriptPath `"{2}`" -XamlContent `$script:Xaml -Version `"{1}`" -Passthru]" -f ${CmdletName}, $VersionTitle, $ScriptPath)
-    try{
-        $script:PSDWizard = Invoke-PSDWizard -ScriptPath $ScriptPath -XamlContent $script:Xaml -Version "$VersionTitle" -Passthru
-        If($script:PSDWizard.length -eq 0){
-            If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -PercentComplete 100 -Status ("Failed to Invoke PSDWizard") -Color Red}
-            Write-PSDLog -Message ("{0}: Error loading PSDWizard: No content returned" -f ${CmdletName}) -LogLevel 3
-            Break
+        $syncHash.Window.WindowState = $WindowState
+        $syncHash.Window.Width = $Width
+        $syncHash.Window.Background = $WindowBackground
+
+        # INNER  FUNCTIONS
+        #Closes UI objects and exits (within runspace)
+        Function Close-PSDStartLoader
+        {
+            if ($syncHash.hadCritError) { Write-Host -Message "Background thread had a critical error" -ForegroundColor red }
+            #if runspace has not errored Dispose the UI
+            if (!($syncHash.isClosing)) { $syncHash.Window.Close() | Out-Null }
         }
-    }Catch{
-        If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -PercentComplete 100 -Status ("Failed to Invoke PSDWizard") -Color Red}
-        Write-PSDLog -Message ("{0}: Error loading PSDWizard: {1}" -f ${CmdletName}, $_.Exception.Message) -LogLevel 3
-        Break
-    }
 
-    #Get Defintions prefix
-    [PSCustomObject]$GlobalElement = Get-PSDWizardDefinitions -Xml $LangDefinitionXmlDoc -Section Global
-
-    Write-PSDLog -Message ("{0}: Running [Set-PSDWizardDefault -XMLContent `$script:Xaml -VariablePrefix {1} -Form `$script:PSDWizard]" -f ${CmdletName}, $GlobalElement.TSVariableFieldPrefix)
-    Set-PSDWizardDefault -XMLContent $script:Xaml -VariablePrefix $GlobalElement.TSVariableFieldPrefix -Form $script:PSDWizard
-
-    Write-PSDLog -Message ("{0}: Invoking PSDWizard using locale [{1}] and with [{2}] theme " -f ${CmdletName}, $Language, $SelectedTheme)
-
-    If($NoSplashScreen -ne $true){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status ("Launching PSDwizard...")}
-    #Optimize UI when running in Windows
-    If ($AsAsyncJob)
-    {
-        Try{
-            $script:PSDWizard.Add_Closing( {
-                    #$_.Cancel = $true
-                    [System.Windows.Forms.Application]::Exit()
-                    Write-PSDLog -Message ("{0}: Closing PSD Wizard" -f ${CmdletName})
-                })
-
-            $async = $script:PSDWizard.Dispatcher.InvokeAsync( {
-                    Add-Type -AssemblyName System.Drawing, System.Windows.Forms, WindowsFormsIntegration
-                    
-                    # Enables a Window to receive keyboard messages correctly when it is opened modelessly from Windows Forms.
-                    [Void][System.Windows.Forms.Integration.ElementHost]::EnableModelessKeyboardInterop($script:PSDWizard)
-
-                    #make sure this display on top of every window
-                    $script:PSDWizard.Topmost = $true
-                    # https://blog.netnerds.net/2016/01/showdialog-sucks-use-applicationcontexts-instead/
-                    # ShowDialog shows the form as a modal window.
-                    # Modal meaning the form cannot lose focus until it's closed and the user can not click on other windows within the same application
-                    # With Show, the code proceeds to the line after the Show statement by spawning a new thread
-                    # With ShowDialog, it single threaded and does not continue until closed.
-                    # Running this without $appContext & ::Run would actually cause a really poor response.
-                    # https://docs.microsoft.com/en-us/dotnet/desktop/wpf/app-development/how-to-return-a-dialog-box-result?view=netframeworkdesktop-4.8
-
-                    $script:PSDWizard.Show() | Out-Null
-                    # This makes the form pop up
-                    $script:PSDWizard.Activate() | Out-Null
-
-                    If($splashScreen.isLoaded){Close-PSDWizardSplashScreen -Runspace $splashScreen}
-                    #Wait for the async is complete before continuing
-                    $async.Wait() | Out-Null
-
-                    ## Force garbage collection to start the wizard with lower RAM usage.
-                    [System.GC]::Collect() | Out-Null
-                    [System.GC]::WaitForPendingFinalizers() | Out-Null
-
-                    # Create an application context for it to all run within.
-                    # This helps with responsiveness, especially when exiting.
-                    $appContext = New-Object System.Windows.Forms.ApplicationContext
-                    [void][System.Windows.Forms.Application]::Run($appContext)
-                })
-        }Catch{
-            If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -PercentComplete 100 -Status ("Error loading PSDWizard") -Color Red}
-            Write-PSDLog -Message ("{0}: Error loading PSDWizard: {1}" -f ${CmdletName}, $_.Exception.Message) -LogLevel 3
-        }
-    }
-    Else {
-
-        #make sure window is on top
-        $script:PSDWizard.Topmost = $true
-        #disable x button
-        $script:PSDWizard.Add_Closing( { $_.Cancel = $true })
+        #Add smooth closing for Window
+        $syncHash.Window.Add_Loaded({ $syncHash.isLoaded = $True })
+    	$syncHash.Window.Add_Closing({ $syncHash.isClosing = $True; Close-PSDStartLoader })
+    	$syncHash.Window.Add_Closed({ $syncHash.isClosed = $True })
         
-        If($splashScreen.isLoaded){Close-PSDWizardSplashScreen -Runspace $splashScreen}
-        #Slower method to present form for modal (no popups)
-        $script:PSDWizard.ShowDialog() | Out-Null
+        #always force windows on bottom
+        $syncHash.Window.Topmost = $True
+
+        #Update OrgName, MainTitle and SubTitle
+        $syncHash.txtOrgName.Text = $syncHash.OrgName
+        switch ($syncHash.Language){
+            'en-US' {
+                $syncHash.txtMainTitle.Text = 'Profile Pre-Selection Menu...'
+                $syncHash.txtSubTitle.Text = 'Please select a profile to preload the PSDWizard'
+            }
+            default{
+                $syncHash.txtMainTitle.Text = 'Profile Pre-Selection Menu...'
+                $syncHash.txtSubTitle.Text = 'Please select a profile to preload the PSDWizard'
+            }
+        }
+
+        #hide posh window
+        #$syncHash.btnPageOpenPS.Visibility = 'Hidden'
+        $syncHash.btnStart.IsEnabled = $false
+
+        If(Test-Path $syncHash.ImageLogo){
+            $syncHash.imgBeginLogo.Source = $syncHash.ImageLogo
+        }
+
+        #popuplate CmbProfiles
+        If($syncHash.ProfileList.count -gt 0){
+            $syncHash.ProfileList | ForEach-Object {
+                $syncHash.CmbProfiles.Items.Add($_.Name)
+            }
+        }Else{
+            $syncHash.txtSubTitle.Text = "No profiles found, Continue to start wizard"
+            $syncHash.btnStart.IsEnabled = $true
+            $syncHash.CmbProfiles.Visibility = 'Hidden'
+        }
+
+        #add event to profile selection to enable start button
+        $syncHash.CmbProfiles.Add_SelectionChanged({
+            $syncHash.btnStart.IsEnabled = $true
+        })
+
+        #add event to open powershell window
+        $syncHash.btnOpenPS.Add_Click( {
+            Start-Process 'cmd' -ArgumentList '/c start powershell -noexit' -WorkingDirectory $env:windir -WindowStyle Hidden
+        })
+
+        #add event to start button
+        $syncHash.btnStart.Add_Click( {
+            $syncHash.SelectedProfile = $syncHash.CmbProfiles.SelectedItem
+            $syncHash.Window.Close()
+        })
+
+        #press ESC will close
+        $syncHash.Window.Add_KeyDown({
+            If($_.Key -eq 'Escape'){
+                $syncHash.Window.Close()
+            }
+        })
+
+
+        $syncHash.Window.ShowDialog()
+        #$PSDRunspace.Close()
+        #$PSDRunspace.Dispose()
+        $syncHash.Error = $Error
+    }) # end scriptblock
+
+    #collect data from runspace
+    $Data = $syncHash
+
+    #invoke scriptblock in runspace
+    $Script:Pwshell.Runspace = $PSDRunSpace
+    $AsyncHandle = $Script:Pwshell.BeginInvoke()
+
+     #wait until runspace is completed before ending
+     do {
+        Start-sleep -m 100 }
+    while (!$AsyncHandle.IsCompleted)
+    #end invoked process
+    $null = $PowerShellCommand.EndInvoke($AsyncHandle)
+
+    #cleanup registered object
+    Register-ObjectEvent -InputObject $syncHash.Runspace `
+            -EventName 'AvailabilityChanged' `
+            -Action {
+
+                    if($Sender.RunspaceAvailability -eq "Available")
+                    {
+                        $Sender.Closeasync()
+                        $Sender.Dispose()
+                        # Speed up resource release by calling the garbage collector explicitly.
+                        # Note that this will pause *all* threads briefly.
+                        [GC]::Collect()
+                    }
+
+                } | Out-Null
+
+    If($Data.Error){Write-PSDLog -Message ("{0}: PSDWizard Splashscreen errored: {1}" -f ${CmdletName}, $Data.Error) -LogLevel 3}
+    Else{Write-PSDLog -Message ("{0}: PSDWizard Splashscreen closed" -f ${CmdletName})}
+    Return $Data
+}
+
+
+Function Get-PSDWizardProfileSelection{
+
+    param(
+        $IniPath = "$script:PSDControlRoot\CustomSettings.ini"
+    )
+
+    # Read all lines from the file
+    $iniData = Get-IniContent -FilePath $IniPath
+    # Get the list of items from Settings, Priority rule to ignore
+    $IgnoreSections = @()
+    $IgnoreSections += $iniData['Settings']['Priority'] -split ',' -replace 'Default','Settings'
+    #Determin if a section has a Subsection, If it does ignrore the vlaue of hte subsection
+    Foreach($Rules in ($iniData.GetEnumerator() | Where-Object {$_.Name -in $IgnoreSections}) ){
+        If($Rules.Value['Subsection']){
+            #need build a match for Virtual-%IsVM% if value is Virtual-True or Virtual-False
+            $IgnoreSections += $Rules.Value['Subsection'] -replace '%(.*)%','True'
+            $IgnoreSections += $Rules.Value['Subsection'] -replace '%(.*)%','False'
+            $IgnoreSections += $Rules.Value['Subsection']
+        }
     }
 
-    #NOTE: Function will not continue until wizard is closed
+    #filter out sections that are part of the bootup processing
+    $ProfileSections = $iniData.GetEnumerator() | Where-Object {$_.Name -notmatch ($IgnoreSections -join '|')}
+    #organize section with default first, then order found in ini
+    $ProfileSections = $ProfileSections | Sort-Object @{Expression={$_[1]['Priority'] -eq 'Default'}; Ascending = $false}, @{Expression={$_.Name}; Ascending = $true} -ErrorAction SilentlyContinue
 
-    #Save all entered results back
-    Write-PSDLog -Message ("{0}: Running [Export-PSDWizardDefault -XMLContent `$script:Xaml -VariablePrefix {1} -Form `$script:PSDWizard]" -f ${CmdletName}, $GlobalElement.TSVariableFieldPrefix)
-    Export-PSDWizardResult -XMLContent $script:Xaml -VariablePrefix $GlobalElement.TSVariableFieldPrefix -Form $script:PSDWizard
-
-    If ($Passthru) {
-        # Return the form results to the caller
-        return $Global:WizardDialogResult
-    }
+    return $ProfileSections
 }
 
 
@@ -3462,7 +3404,7 @@ Function Get-PSDWizardTSData{
     #>
     [CmdletBinding()]
     Param(
-        [string]$DataPath = $script:PSDContentPath,
+        [string]$DataPath = $script:PSDControlRoot,
         [string]$TS,
         [ValidateSet('Name','OSGUID')]
         [string]$DataSet,
@@ -3470,17 +3412,30 @@ Function Get-PSDWizardTSData{
     )
 
     If($TS -ne 'ID'){
-        [xml]$TSdata = Get-Content "$DataPath\$TS\TS.xml"
-        If($DataSet){
-            switch($DataSet){
-                'Name' {return $TSdata.sequence.name}
-                'OSGUID' {$OSInstallGroup = ($TSdata.sequence.group.step | Where-Object { $_.Type -eq 'BDD_InstallOS' }).defaultVarList.variable
-                        return ($OSInstallGroup | Where-Object { $_.Name -eq 'OSGUID' }).'#text'
-                        }
+        Try{
+            [xml]$TSdata = Get-Content "$DataPath\$TS\TS.xml"
+            If($DataSet){
+                switch($DataSet){
+                    'Name' {$Results = $TSdata.sequence.name}
+                    'OSGUID' {$OSInstallGroup = ($TSdata.sequence.group.step | Where-Object { $_.Type -eq 'BDD_InstallOS' }).defaultVarList.variable
+                            $Results =  ($OSInstallGroup | Where-Object { $_.Name -eq 'OSGUID' }).'#text'
+                            }
+                }
+            }Else{
+                $Results = $TSdata.sequence.group
             }
-        }Else{
-            return $TSdata.sequence.group
+        }Catch{
+            Write-PSDLog -Message ("{0}: Failed to retrieve data from TS.xml file for TS id [{1}] in path [2]. {3}" -f ${CmdletName}, $TS, $DataPath, $_.Exception.Message) -LogLevel 3
         }
+    }
+
+    If($Passthru){
+        return $TSdata
+    }Else{
+        If($Null -eq $Results){
+            Write-PSDLog -Message ("{0}: No results returned for TS id [{1}] with data set: {2}" -f ${CmdletName}, $TS, $DataSet) -LogLevel 3
+        }
+        return $Results
     }
 }
 #endregion
@@ -3509,7 +3464,7 @@ Function Test-PSDWizardValidTS{
     }Else{
         return $false
     }
-    
+
 }
 #endregion
 
@@ -3544,12 +3499,12 @@ Function Get-PSDWizardOSList{
     .SYNOPSIS
         Get OS list from OperatingSystems.xml
     .EXAMPLE
-        $Path = $script:PSDContentRoot
+        $Path = Get-PSDContent -Content 'control'
         Get-PSDWizardOSList
     #>
     [CmdletBinding()]
     Param(
-        $Path = $script:PSDContentPath
+        $Path = $script:PSDControlRoot
     )
 
     If ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Grabbing content from [{1}] " -f ${CmdletName}, $FilePath) }
@@ -3701,14 +3656,14 @@ Function Get-PSDWizardTSEnvProperty {
             if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Grabbing value for [{1}]" -f ${CmdletName}, $Name) -LogLevel 1 }
             $TSItem = Get-Item TSEnv:$Name
         }
-    }Catch{ 
+    }Catch{
         if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Unable to find value for [{1}]" -f ${CmdletName}, $Name) -LogLevel 2 }
         $TSItem = $null
     }
 
     # Determine if TSItem's value has an environment variable in it
     If (!$NoExpand -and $TSItem) { $TSItem = Expand-PSDWizardTSEnvValue $TSItem }
-    
+
     # Log the result
     if ($PSDDeBug) {
         if ($TSItem.Value -is [System.Object[]]) {
@@ -3730,7 +3685,7 @@ Function Get-PSDWizardTSEnvProperty {
 #endregion
 
 
-#region FUNCTION: Get-PSDWizardTSEnvListProperty 
+#region FUNCTION: Get-PSDWizardTSEnvListProperty
 Function Get-PSDWizardTSEnvListProperty {
     <#
     .SYNOPSIS
@@ -3769,10 +3724,9 @@ Function Get-PSDWizardTSEnvListProperty {
 
     # Try to get the TSEnv item
     Try{
-        if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Finding [{1}] list" -f ${CmdletName}, $Name) -LogLevel 1 }
-        $TSListItems = Get-Item TSEnv:$($Name)00*
-        #order the list by sortby
-        $TSListItems = $TSListItems | Sort-Object -Property $SortBy
+        #$TSListItems = Get-Item tsenvlist:$($Name)* | Where-Object { $_.Name -match '\d{3}$' } | Sort-Object -Property $SortBy
+        $TSListItems = Get-Item tsenvlist:$($Name) | Select -ExpandProperty Value -Unique | Sort-Object
+        if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Found [{1}] list items for [{2}]" -f ${CmdletName}, $TSListItems.count, $Name) -LogLevel 1 }
     }Catch{
         if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Unable to find value for [{1}]" -f ${CmdletName}, $Name) -LogLevel 2 }
         $TSListItems = $null
@@ -3780,7 +3734,7 @@ Function Get-PSDWizardTSEnvListProperty {
 
     # Return the result
     if ($null -ne $TSListItems) {
-        $TSListItems| Select-Object @selectParams
+        $TSListItems | Select-Object @selectParams
     } else {
         return $null
     }
@@ -3811,20 +3765,20 @@ Function Expand-PSDWizardTSEnvValue {
         #sometimes mutliple values exist, loop through each
         foreach ($DynamicValue in $DynamicValues) {
             if ($PSDDeBug -eq $true){ Write-PSDLog -Message ("{0}: Found dynamic value [{1}]" -f ${CmdletName}, $DynamicValue) -LogLevel 1 }
-            
+
             # Use switch statement for better readability
             switch ( $DynamicValue.ToLower() ) {
-                'deployroot' { $value = $script:PSDDeployRoot }
-                'scriptroot' { $value = $script:PSDScriptRoot }
-                'controlroot' { $value = $script:PSDContentRoot }
-                'psddeployroot' { $value = $script:PSDDeployRoot }
-                'psdscriptroot' { $value = $script:PSDScriptRoot }
-                'psdresourceroot' { $value = $script:PSDResourceRoot }
+                'deployroot' { $value = Get-PSDContent }
+                'scriptroot' { $value = Get-PSDContent -Content "scripts" }
+                'controlroot' { $value = Get-PSDContent -Content "control" }
+                'psddeployroot' { $value = Get-PSDContent }
+                'psdscriptroot' { $value = Get-PSDContent -Content "scripts" }
+                'psdresourceroot' { $value = Get-PSDContent -Content "psdresources" }
                 default { $value = (Get-Item TSEnv:$DynamicValue).Value }
             }
 
-            if ( ($PSDDeBug -eq $true) -and ($null -ne $value) ) { 
-                Write-PSDLog -Message ("{0}: Updated TSEnv value [{1}] with [{2}]" -f ${CmdletName}, $DynamicValue, $Value) -LogLevel 1 
+            if ( ($PSDDeBug -eq $true) -and ($null -ne $value) ) {
+                Write-PSDLog -Message ("{0}: Updated TSEnv value [{1}] with [{2}]" -f ${CmdletName}, $DynamicValue, $Value) -LogLevel 1
             }
 
             If ($value -and $DynamicValue) {
@@ -3887,6 +3841,39 @@ Function Set-PSDWizardTSEnvProperty {
     }
 }
 #endregion
+
+
+#region FUNCTION: Set-PSDWizardTSEnvListProperty
+Function Set-PSDWizardTSEnvListProperty {
+    <#
+    .SYNOPSIS
+        Set PSD property value
+    .EXAMPLE
+        $Name='Applications'
+        $Value=@('6e66d5f8-6701-4636-82db-83d4140358d9','9504abf7-ea1e-425d-9c19-0ecb063cd86b')
+        Set-PSDWizardTSEnvListProperty $Name -Value $Value
+    .LINK
+        Get-PSDWizardTSEnvListProperty
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true, Position = 1)]
+        [AllowEmptyString()]
+        [string[]]$Value,
+        [switch]$Passthru
+    )
+    ## Get the name of this function
+    [string]${CmdletName} = $MyInvocation.MyCommand
+
+    if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Set [{1}] list to [{2}]" -f ${CmdletName}, $Name, ($Value -join ',')) -LogLevel 1 }
+    Set-Item -Path TSEnvList:$Name -Value $Value -Force
+    
+    If ($PSBoundParameters.ContainsKey('Passthru')) {
+        Get-PSDWizardTSEnvListProperty $Name
+    }
+}
 
 Function Remove-PSDWizardTSEnvProperty {
     <#
@@ -4088,7 +4075,7 @@ Function Set-PSDWizardElement {
                 #loop each parameter
                 Foreach ($Parameter in $Parameters) {
                     #Determine what each parameter and value is
-                    #if parameter is FieldObject of FieldName ignore setting it value
+                    #if parameter is SelectedApps of FieldName ignore setting it value
                     #Write-Host ('working with parameter: {0}' -f $Parameter)
                     Switch ($Parameter) {
                         'BorderColor' { $SetValue = $true; $Property = 'BorderBrush'; $value = $BorderColor }
@@ -4460,7 +4447,6 @@ Function Get-PSDWizardComputerName {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
-        [Alias('ComputerName','Value')]
         $InputString
     )
     ## Get the name of this function
@@ -4513,7 +4499,7 @@ Function Get-PSDWizardComputerName {
                             #grab string length not inclusing the %RAND% to determine length
                             $Length = 15 - ($InputString -replace '%.*?RAND%', '').Length
                         }
-                        
+
                         [string]$RandValue = Get-PSDWizardRandomAlphanumericString -Length $Length
                         if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Parsing Computername portion [{1}]; Using RAND expression with value [{2}]" -f ${CmdletName}, $Part, $RandValue) }
 
@@ -4526,10 +4512,10 @@ Function Get-PSDWizardComputerName {
                         #$MacValue = Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true } | Select-Object -ExpandProperty MACAddress
                         $MacValue = Get-PSDWizardTSEnvProperty 'MacAddress' -ValueOnly
                         $MacValue = ($MacValue -split ":") -join ""
-                        
+
                         if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Parsing Computername portion [{1}]; Using MACADDRESS expression with value [{2}]" -f ${CmdletName}, $Part, $MacValue) }
                         #check if mac address is truncated with colon (eg. %MACADDRESS:6%)
-                        
+
                         If ($Part -match '(?<=\:).*?(?=\d{1,2})') {
                             $Length = $Part.split(':')[1]
                             [string]$MacValue = $MacValue | Set-PSDWizardStringLength -Length $Length -TrimDirection Right
@@ -4548,7 +4534,7 @@ Function Get-PSDWizardComputerName {
                         $AssetValue = Get-PSDWizardTSEnvProperty 'AssetTag' -ValueOnly
                         #$AssetTag = Get-CimInstance Win32_SystemEnclosure | Select-Object -ExpandProperty SMBIOSAssetTag
                         if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Parsing Computername portion [{1}]; Using ASSETTAG expression with value [{2}]" -f ${CmdletName}, $Part, $AssetValue) }
-                        
+
                         If ($Part -match '(?<=\:).*?(?=\d{1,2})') {
                             $Length = $Part.split(':')[1]
                             [string]$AssetValue = $AssetValue | Set-PSDWizardStringLength -Length $Length -TrimDirection Right
@@ -4557,11 +4543,11 @@ Function Get-PSDWizardComputerName {
                             $Length = $Part.split(':')[0]
                             [string]$AssetValue = $AssetValue | Set-PSDWizardStringLength -Length $Length -TrimDirection Left
                         }
-                        
+
                         [string]$Part = $AssetValue
                     }
 
-                    
+
                     #if any value is - or a number, ignore
                     '-|\d+' {}
 
@@ -4855,7 +4841,7 @@ Function Add-PSDWizardComboList {
         $ListObject=$_locTabLanguage
         $Identifier='Name'
         $PreSelect=$SelectedUILanguage.Name
-        
+
         Add-PSDWizardComboList -InputObject $Global:OSLanguageList -ListObject $_locTabLanguage -Identifier 'Name' -PreSelect $SelectedUILanguage.Name
     .EXAMPLE
         $InputObject=$Global:PSDWizardLanguageList
@@ -4951,11 +4937,11 @@ Function Add-PSDWizardComboList {
         }
     }
 
-    
+
 
     #select the item
     If ($PSBoundParameters.ContainsKey("PreSelect")) {
-        If($null -ne $PreSelect) { 
+        If($null -ne $PreSelect) {
             $ListObject.SelectedItem = $PreSelect
             if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Preselected item [{1}] for [{2}]" -f ${CmdletName}, $PreSelect, $ListObject.Name) }
         }Else{
@@ -4965,7 +4951,7 @@ Function Add-PSDWizardComboList {
     }
 
     If($PSBoundParameters.ContainsKey("PreSelectIndex")){
-        If($null -ne $PreSelectIndex) { 
+        If($null -ne $PreSelectIndex) {
             $ListObject.SelectedIndex = $PreSelectIndex
             if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Preselected index [{1}] for [{2}]" -f ${CmdletName}, $PreSelectIndex, $ListObject.Name) }
         }Else{
@@ -5080,14 +5066,14 @@ Function Add-PSDWizardList {
     }
 
     If ($PSBoundParameters.ContainsKey("PreSelect")) {
-        If($null -ne $PreSelect) { 
+        If($null -ne $PreSelect) {
             $ListObject.ScrollIntoView($ListObject.Items[$ListObject.SelectedIndex + 3])
             if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Preselected item [{1}] for [{2}]" -f ${CmdletName}, $PreSelect, $ListObject.Name) }
         }
     }
 
     If($PSBoundParameters.ContainsKey("PreSelectIndex")){
-        If($null -ne $PreSelectIndex) { 
+        If($null -ne $PreSelectIndex) {
             $ListObject.ScrollIntoView($ListObject.Items[$PreSelectIndex + 3])
             if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Preselected index [{1}] for [{2}]" -f ${CmdletName}, $PreSelectIndex, $ListObject.Name) }
         }
@@ -5625,6 +5611,7 @@ Function Test-PSDWizardTaskSequence {
         {
             Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$False
             If($ShowValidation){Invoke-PSDWizardNotification -Message ('Invalid TS: No OS found!') -OutputObject $_tsTabValidation -Type Error}
+            If($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: TEST TS: No OSGUID found for task sequence: {1}. Validate the Task sequence Install Operating System step and restart" -f ${CmdletName}, $TaskSequenceID) }
 
         }Else{
             If($TSAssignedOSGUID -in $Global:OperatingSystemList.Guid)
@@ -5643,27 +5630,9 @@ Function Test-PSDWizardTaskSequence {
             }
             Else {
                 Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$False
-                If($ShowValidation){Invoke-PSDWizardNotification -Message ('Invalid TS: OS guid not found: {0}!' -f $TSAssignedOSGUID) -OutputObject $_tsTabValidation -Type Error}
+                If($ShowValidation){Invoke-PSDWizardNotification -Message ('Invalid TS: No valid OS found: {0}!' -f $TSAssignedOSGUID) -OutputObject $_tsTabValidation -Type Error}
+                If($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: TEST TS: A OSGUID was found [{1}] but is not valid for task sequence: {2}. Validate the Task sequence Install Operating System step and restart" -f ${CmdletName}, $TSAssignedOSGUID, $TaskSequenceID) }
             }
-        }
-
-        If($TSAssignedOSGUID -in $Global:OperatingSystemList.Guid)
-        {
-            If($ShowValidation){Invoke-PSDWizardNotification -OutputObject $_tsTabValidation -Type Hide}
-            #find the language name in full langauge object list
-            $Global:OSSupportedLanguages = @(($Global:OperatingSystemList | Where-Object { $_.Guid -eq $TSAssignedOSGUID }).Language)
-            #Get only available locales settings from Select OS
-            $Global:OSLanguageList = $Global:PSDWizardLanguageList | Where-Object { $_.Culture -in $Global:OSSupportedLanguages }
-            #set button to enable
-            Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$True
-        }
-        ElseIf($TaskSequenceID -eq 'ID'){
-            Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$False
-            #If($ShowValidation){Invoke-PSDWizardNotification -Message 'Folder Selected!' -OutputObject $_tsTabValidation -Type Error}
-        }
-        Else {
-            Get-PSDWizardElement -Name "_wizNext" | Set-PSDWizardElement -Enable:$False
-            If($ShowValidation){Invoke-PSDWizardNotification -Message ('Invalid TS: OS guid not found: {0}!' -f $TSAssignedOSGUID) -OutputObject $_tsTabValidation -Type Error}
         }
 
     }Else{
@@ -5676,27 +5645,29 @@ Function Test-PSDWizardTaskSequence {
 }
 #endregion
 
-#region FUNCTION: Get-PSDWizardSelectedApplications
-Function Get-PSDWizardSelectedApplications {
+#region FUNCTION: Set-PSDWizardSelectedApplications
+Function Set-PSDWizardSelectedApplications {
      <#
     .SYNOPSIS
-          Get all selection application GUIDs
+        Set selected application
     .EXAMPLE
-         Get-PSDWizardSelectedApplications -InputObject $apps -FieldObject $_appTabList -Identifier "Name" -Passthru
+        $TSEnvAppList = Get-PSDWizardTSEnvProperty 'Applications' -WildCard
+        Set-PSDWizardSelectedApplications -InputObject $TSEnvAppList -SelectedApps $_appTabList -Identifier "Name" -Passthru
     .EXAMPLE
-        $InputObject=$apps
-        $FieldObject=$_appTabList
-        Get-PSDWizardSelectedApplications -InputObject $InputObject -FieldObject $FieldObject -Identifier "Name" -Passthru
+        $InputObject=$TSEnvAppList
+        $SelectedApps=$_appTabList
+        Set-PSDWizardSelectedApplications -InputObject $InputObject -SelectedApps $SelectedApps -Identifier "Name" -Passthru
     .NOTES
-        $AllApps = $FieldObject.Items | foreach {$i=0} {$_ | Add-Member Index ($i++) -PassThru}
+        $AllApps = $SelectedApps.Items | foreach {$i=0} {$_ | Add-Member Index ($i++) -PassThru}
     .LINK
         Get-PSDWizardTSChildItem
     #>
     [CmdletBinding()]
     Param(
-        [Parameter(Mandatory = $true)]
-        $FieldObject,
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $false)]
+        [Alias('FieldObject')]
+        $SelectedApps,
+        [Parameter(Mandatory = $false)]
         $InputObject,
         [Parameter(Mandatory = $false)]
         [string]$Identifier,
@@ -5708,43 +5679,68 @@ Function Get-PSDWizardSelectedApplications {
     #Add index property to app list
     $AllApps = Get-PSDWizardTSChildItem -Path "DeploymentShare:\Applications" -Recurse
 
-    $DefaultAppList = $InputObject | Where-Object { ($_.Name -notlike 'Skip*') -and ($_.Name -notlike '*Codes') -and -not([string]::IsNullOrEmpty($_.Value)) }
-    $AppGuids = $DefaultAppList.Value | Select-Object -Unique
+    If ($PSBoundParameters.ContainsKey('InputObject')) {
+        $DefaultAppList = ($InputObject | Where-Object { ($_.Name -notlike 'Skip*') -and ($_.Name -notlike '*Codes') -and -not([string]::IsNullOrEmpty($_.Value)) }).Value
+    }
+
+    $AppGuids = $DefaultAppList | Select-Object -Unique
 
     #Set an emptry valus if not specified
     If ($null -eq $Identifier) { $Identifier = '' }
 
     $SelectedGuids = @()
-    Foreach ($AppGuid in $AppGuids) {
+    #preselect application inthe wizard if found
+    Foreach ($AppGuid in $AppGuids)
+    {
         $AppInfo = $AllApps | Where-Object { $_.Guid -eq $AppGuid }
         #collect GUIDs (for Passthru output)
         $SelectedGuids += $AppGuid
 
         #Check if property exists
         If ($AppInfo.PSobject.Properties.Name.Contains($Identifier)) {
-            $FieldObject.SelectedItems.Add($AppInfo.$Identifier);
+            $SelectedApps.SelectedItems.Add($AppInfo.$Identifier)
         }
         Else {
-            $FieldObject.SelectedItems.Add($AppInfo) | Out-Null
+            $SelectedApps.SelectedItems.Add($AppInfo) | Out-Null
         }
     }
 
     if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Preselected [{0}] applications" -f ${CmdletName}, $SelectedGuids.count) }
+
+    #set the tsenv application list property
+    Set-PSDWizardTSEnvListProperty 'Applications' -Value $SelectedGuids
+
     If ($Passthru) {
         return ($SelectedGuids -join ',')
     }
+    <#Else{
+        
+        $i = 1
+        Foreach ($AppGuid in $SelectedGuids){
+            #padd the name (eg Applications001, Applications002,etc)
+            [string]$NumPad = "{0:d3}" -f [int]$i
+
+            #set the  tsenv application list property
+            Set-PSDWizardTSEnvProperty ("Applications" + $NumPad) -Value $AppGuid
+
+            If ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: {1} is now: {2}" -f ${CmdletName}, ("Applications" + $NumPad), $AppGuid) }
+            $i++
+        }
+        
+        
+    }#>
 }
 #endregion
 
-#region FUNCTION: Set-PSDWizardSelectedApplications
-Function Set-PSDWizardSelectedApplications {
+#region FUNCTION: Get-PSDWizardSelectedApplications
+Function Get-PSDWizardSelectedApplications {
     <#
     .SYNOPSIS
-         Set selection application GUIDs
+        Get selection application GUIDs
     .EXAMPLE
         $InputObject=$SelectedApps
-        $FieldObject=$_appTabList
-        Set-PSDWizardSelectedApplications -InputObject $InputObject -FieldObject $FieldObject -Identifier "Name" -Passthru
+        $SelectedApps=$_appTabList
+        Get-PSDWizardSelectedApplications -InputObject $InputObject -SelectedApps $SelectedApps -Identifier "Name" -Passthru
     .NOTES
        $CurrentAppList = $InputObject | Where-Object { ($_.Name -notlike 'Skip*') -and ($_.Name -notlike '*Codes') }
     .LINK
@@ -5752,8 +5748,8 @@ Function Set-PSDWizardSelectedApplications {
     #>
     [CmdletBinding()]
     Param(
-        [Parameter(Mandatory = $true)]
-        $FieldObject,
+        [Parameter(Mandatory = $false)]
+        $SelectedApps,
         [Parameter(Mandatory = $false)]
         $InputObject,
         [Parameter(Mandatory = $false)]
@@ -5765,38 +5761,35 @@ Function Set-PSDWizardSelectedApplications {
     $AllApps = @()
     $AllApps += Get-PSDWizardTSChildItem -Path "DeploymentShare:\Applications" -Recurse
 
-    $SelectedApps = $FieldObject.SelectedItems
-
-    #Get current applist from tsenv if exists
-    # Handle cases where InputObject is null
-    $CurrentAppList = if ($InputObject) {
-        $InputObject | Where-Object { ($_.Name -notlike 'Skip*') -and ($_.Name -notlike '*Codes') -and -not([string]::IsNullOrEmpty($_.Value)) }
-    } else {
-        @()
+    If ($PSBoundParameters.ContainsKey('SelectedApps')) {
+        $SelectedApps = $SelectedApps.SelectedItems
     }
 
-    $i = 1
-    $SelectedGuids = @()
-    Foreach ($App in $SelectedApps) {
-        [string]$NumPad = "{0:d3}" -f [int]$i
+    #if no input object, use the field object
+    If ($PSBoundParameters.ContainsKey('InputObject')) {
+        $DefaultAppList = ($InputObject | Where-Object { ($_.Name -notlike 'Skip*') -and ($_.Name -notlike '*Codes') -and -not([string]::IsNullOrEmpty($_.Value)) }).Value
+    }
 
-        $AppInfo = $AllApps | Where-Object { $_.Name -eq $App }
-        #collect GUIDs (for Passthru output)
-        $SelectedGuids += $AppInfo.Guid
+    $AppList = @()
+    Foreach ($AppName in $SelectedApps)
+    {
+        #grab the app details if exist
+        $AppInfo = $AllApps | Where-Object { $_.Name -eq $AppName }
 
-        If ($AppInfo.Guid -in $CurrentAppList.Guid) {
-            #TODO: get name to determine what is the next app number?
+        If($null -ne $AppInfo) {
+            #collect GUIDs (for Passthru output)
+            $AppList += $AppInfo
         }
-        Else {
-            Set-PSDWizardTSEnvProperty ("Applications" + $NumPad) -Value $AppInfo.Guid
-        }
-        $i++
+
     }
 
     #Write-PSDLog -Message "Selected [$($InputObject.count)] Applications" -LogLevel 1
-    if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Set [{1}] applications to install" -f ${CmdletName}, $SelectedGuids.count) }
+    if ($PSDDeBug -eq $true) { Write-PSDLog -Message ("{0}: Retrieved [{1}] applications set to install" -f ${CmdletName}, $AppList.count) }
+
     If ($Passthru) {
-        return ($SelectedGuids -join ',')
+        return $AppList
+    }Else{
+        return ($AppList.Guid -join ',')
     }
 }
 #endregion
@@ -5917,6 +5910,291 @@ function Hide-PSDWizardDebugConsole {
 }
 #endregion
 
+
+#region FUNCTION: Show-PSDWizard
+Function Show-PSDWizard {
+    <#
+    .SYNOPSIS
+        Start the wizard
+
+    .EXAMPLE
+        $ResourcePath = (Get-PSDContent -Content 'scripts') + '\PSDWizardNew'
+        $Language = 'en-US'
+        $Theme = 'Classic'
+        Show-PSDWizard -ResourcePath $ResourcePath -Language $Language -Theme $Theme
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [Alias('XamlPath')]
+        [string]$ResourcePath,
+
+        [Parameter(Mandatory = $false, Position = 1)]
+        [ValidateSet('en-US')]
+        [string]$Language = 'en-US',
+
+        [Parameter(Mandatory = $false, Position = 2)]
+        [string]$Theme = 'Classic',
+
+        [Parameter(Mandatory = $false)]
+        $Page,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$AsAsyncJob,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Passthru,
+
+        [switch]$ShowPreProfileScreen,
+
+        [switch]$NoSplashScreen
+    )
+
+    ## Get the name of this function
+    [string]${CmdletName} = $MyInvocation.MyCommand
+
+    $ResourcePath = $ResourcePath.TrimEnd('\')
+    
+    #Default to false
+    $Global:WizardDialogResult = $false
+
+    #load profile selection screen
+    $ProfileList = Get-PSDWizardProfileSelection
+
+    If($ShowPreProfileScreen -and $ProfileList.Count -gt 0){
+        #If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status ("Displaying Profile Selection screen...")}
+        Set-PSDWizardTSEnvProperty -Name 'SkipPSDWelcome' -Value 'YES'
+
+        $LogoPath = (Get-PSDWizardTSEnvProperty 'PSDWizardLogo' -ValueOnly)
+        $ImagePath = "$script:PSDScriptRoot\powershell.png"
+        If($null -ne $LogoPath){
+            If(Test-Path$LogoPath){
+                $ImagePath = $LogoPath
+            }
+        }
+
+        $OrgName = (Get-PSDWizardTSEnvProperty '_SMSTSOrgName' -ValueOnly)
+        If(!$OrgName){$OrgName = 'PSD'}
+    
+        If($PSDDeBug -eq $true){Write-PSDLog -Message ("{0}: Running [Show-PSDWizardProfileScreen -ResourcePath {1} -ProfileList '{2}' -Language {3} -Theme {4} -LogoPath {5} -OrgName {6}]" -f ${CmdletName}, $ResourcePath, ($ProfileList -join ',') ,$Language, $Theme, $ImagePath,$OrgName)}
+        
+        $ProfileScreen = Show-PSDWizardProfileScreen -ResourcePath "$ResourcePath\Resources" -ProfileList $ProfileList -Language $Language -Theme $Theme -LogoPath $ImagePath -OrgName $OrgName
+        If( ($null -ne $ProfileScreen.SelectedProfile) -and ($ProfileScreen.SelectedProfile -ne 'Default') ){    
+            Write-PSDLog -Message ("{0}: Importing section [{1}] into rules" -f ${CmdletName},$ProfileScreen.SelectedProfile)
+            #update rules
+            Invoke-PSDRules -FilePath "$script:PSDControlRoot\CustomSettings.ini" -MappingFile "$script:PSDScriptRoot\ZTIGather.xml" -Section $ProfileScreen.SelectedProfile
+            Set-PSDWizardTSEnvProperty -Name 'PSDSelectedProfile' -Value $ProfileScreen.SelectedProfile
+            #update theme if set in rules
+            If(Get-PSDWizardTSEnvProperty -Name 'PSDWizardTheme' -ValueOnly){
+                $Theme = Get-PSDWizardTSEnvProperty -Name 'PSDWizardTheme' -ValueOnly
+            }
+        }Else{
+            Write-PSDLog -Message ("{0}: No new profile selection was processed" -f ${CmdletName}) -LogLevel 2
+        }
+    }
+
+    If($NoSplashScreen -ne $true){
+        $splashScreen = Show-PSDWizardSplashScreen -Theme $Theme -Language $Language
+        Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status "Initializing PSDWizard components..."
+    }
+
+    #Load functions from external file
+    Write-PSDLog -Message ("{0}: Loading PSD Wizard helper script [{1}\PSDWizard.Helper.ps1]" -f ${CmdletName}, $ResourcePath)
+    If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status "Loading PSDwizard helper file..."}
+    . "$ResourcePath\PSDWizard.Helper.ps1" -Caller ${CmdletName}
+
+    #parse changelog for version for a more accurate version
+    $ChangeLogPath = Join-Path $ResourcePath 'CHANGELOG.MD'
+    If (Test-Path $ChangeLogPath)
+    {
+        Write-PSDLog -Message ("{0}: ChangeLog found at [{1}]" -f ${CmdletName}, $ChangeLogPath)
+        $ChangeLog = Get-Content $ChangeLogPath
+        $Changedetails = (($ChangeLog -match '##')[0].TrimStart('##') -split '-').Trim()
+        [string]$MenuVersion = [string]$Changedetails[0]
+        [string]$MenuDate = $Changedetails[1]
+        $VersionTitle = "v$MenuVersion [$MenuDate]"
+    }
+    Else {
+        $VersionTitle = "v2"
+    }
+
+    If ( (Get-PSDWizardTSEnvProperty -Name 'PSDDeBug' -ValueOnly) -eq 'YES') {
+        $PSDDeBug = $true
+    }
+
+    #Set theme in 1 of 3 ways: Parameter, CustomeSettings.ini, Default
+    If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status ("Determining PSDWizard definition for theme: {0}..." -f $theme)}
+    If ($Theme) {
+        If ( $PSDDeBug -eq $true ) { Write-PSDLog -Message ("{0}: Show-PSDWizard cmdlet was called with Theme parameter, will attempt to use the theme [{1}]" -f ${CmdletName}, $Theme) }
+        $SelectedTheme = $Theme
+    }
+    ElseIf ($ThemeFromCS = Get-PSDWizardTSEnvProperty -Name 'PSDWizardTheme' -ValueOnly) {
+        If ( $PSDDeBug -eq $true ) { Write-PSDLog -Message ("{0}: [WizardTheme] setting found in CustomSetting.ini; will attempt to use the theme [{1}]" -f ${CmdletName}, $ThemeFromCS) }
+        $SelectedTheme = $ThemeFromCS
+    }
+    Else {
+        $SelectedTheme = 'Classic'
+        If ( $PSDDeBug -eq $true ) { Write-PSDLog -Message ("{0}: No theme control was found; defaulting to theme [{1}]" -f ${CmdletName}, $SelectedTheme) }
+    }
+
+    #Build Path to definition files; if file not found, default to en-US version
+    If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status ("Processing PSDWizard language definition: {0}..." -f $Language)}
+    [string]$LangDefinitionXml = Join-Path -Path $ResourcePath -ChildPath ('PSDWizard_Definitions_' + $Language + '.xml')
+    [string]$ThemeDefinitionXml = Join-Path -Path "$ResourcePath\Themes" -ChildPath ($SelectedTheme + '_Theme_Definitions_' + $Language + '.xml')
+
+    If ( (Test-Path $LangDefinitionXml) -and (Test-Path $ThemeDefinitionXml) )
+    {
+        [string]$XmlLangDefinitionFile = ('PSDWizard_Definitions_' + $Language + '.xml')
+        [string]$XmlThemeDefinitionFile = ($SelectedTheme + '_Theme_Definitions_' + $Language + '.xml')
+    }
+    Else {
+        Write-PSDLog -Message ("{0}: language definition file [{1}] or theme definitions file [{2}] missing; reverting to defaults" -f ${CmdletName}, ('PSDWizard_Definitions_' + $Language + '.xml'), ($SelectedTheme + '_Theme_Definitions_' + $Language + '.xml')) -LogLevel 2
+        [string]$XmlLangDefinitionFile = 'PSDWizard_Definitions_en-US.xml'
+        [string]$XmlThemeDefinitionFile = 'Classic_Theme_Definitions_en-US.xml'
+    }
+
+    #Rebuild Build path to language and theme definition (if paths aren't found)
+    [string]$LangDefinitionXml = Join-Path -Path $ResourcePath -ChildPath $XmlLangDefinitionFile
+    [string]$ThemeDefinitionXml = Join-Path -Path "$ResourcePath\Themes" -ChildPath $XmlThemeDefinitionFile
+
+
+    #Check again (Incase definition defaulted to en-US and ARE still missing)
+    If ( (Test-Path $LangDefinitionXml) -and (Test-Path $ThemeDefinitionXml) )
+    {
+        #Get content of Defintion file
+        [Xml.XmlDocument]$LangDefinitionXmlDoc = (Get-Content $LangDefinitionXml)
+        [Xml.XmlDocument]$ThemeDefinitionXmlDoc = (Get-Content $ThemeDefinitionXml)
+    }
+    Else {
+        Write-PSDLog -Message ("{0}: language definition file [{1}] or theme definitions file [{2}] not found" -f ${CmdletName}, $LangDefinitionXml, $ThemeDefinitionXml) -LogLevel 3
+        If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -PercentComplete 100 -Status ("language and theme definition file not found") -Color Red}
+        Break
+    }
+
+    If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status ("Formatting PSDWizard layout...")}
+    #Build the XAML file based on definitions
+    Write-PSDLog -Message ("{0}: Running [Format-PSDWizard -Path {1} -LangDefinition (xml:{2}) -ThemeDefinition (xml:{3})]" -f ${CmdletName}, $ResourcePath, $XmlLangDefinitionFile, $XmlThemeDefinitionFile)
+    Try{
+        $script:Xaml = Format-PSDWizard -Path $ResourcePath -LangDefinition $LangDefinitionXmlDoc -ThemeDefinition $ThemeDefinitionXmlDoc
+        If ( $PSDDeBug -eq $true ) {
+            $Logpath = Split-Path $Global:PSDLogPath -Parent
+            $script:Xaml.OuterXml | Out-File "$Logpath\PSDWizardNew_$($SelectedTheme)_$($Language).xaml" -Force
+        }
+    }Catch{
+        If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -PercentComplete 100 -Status ("Error formatting PSDWizard") -Color Red}
+        Write-PSDLog -Message ("{0}: Error formatting PSDWizard: {1}" -f ${CmdletName}, $_.Exception.Message) -LogLevel 3
+        Break
+    }
+
+    #load wizard
+    If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status ("Importing PSDWizard content...")}
+    Write-PSDLog -Message ("{0}: Running [Invoke-PSDWizard -XamlContent `$script:Xaml -Version `"{1}`" -Passthru]" -f ${CmdletName}, $VersionTitle)
+    try{
+        $script:PSDWizard = Invoke-PSDWizard -XamlContent $script:Xaml -Version "$VersionTitle" -Passthru
+        If($script:PSDWizard.length -eq 0){
+            If($splashScreen.isLoaded){
+                Update-PSDWizardProgressBar -Runspace $splashScreen -PercentComplete 100 -Status ("Failed to Invoke PSDWizard") -Color Red
+                #Loop for 10 seconds subdue the error to 0 then close
+                Start-Sleep -Seconds 10
+                Close-PSDWizardRunspaceScreen -Runspace $splashScreen
+            }
+        
+            Write-PSDLog -Message ("{0}: Error loading PSDWizard: No content returned" -f ${CmdletName}) -LogLevel 3
+            Break
+        }
+    }Catch{
+        If($splashScreen.isLoaded){
+            Update-PSDWizardProgressBar -Runspace $splashScreen -PercentComplete 100 -Status ("Failed to Invoke PSDWizard") -Color Red
+            #Loop for 10 seconds subdue the error to 0 then close
+            Start-Sleep -Seconds 10
+            Close-PSDWizardRunspaceScreen -Runspace $splashScreen
+        }
+        Write-PSDLog -Message ("{0}: Error loading PSDWizard: {1}" -f ${CmdletName}, $_.Exception.Message) -LogLevel 3
+        Break
+    }
+
+    #Get Defintions prefix
+    [PSCustomObject]$GlobalElement = Get-PSDWizardDefinitions -Xml $LangDefinitionXmlDoc -Section Global
+
+    Write-PSDLog -Message ("{0}: Running [Set-PSDWizardDefault -XMLContent `$script:Xaml -VariablePrefix {1} -Form `$script:PSDWizard]" -f ${CmdletName}, $GlobalElement.TSVariableFieldPrefix)
+    Set-PSDWizardDefault -XMLContent $script:Xaml -VariablePrefix $GlobalElement.TSVariableFieldPrefix -Form $script:PSDWizard
+
+    Write-PSDLog -Message ("{0}: Invoking PSDWizard using locale [{1}] and with [{2}] theme " -f ${CmdletName}, $Language, $SelectedTheme)
+
+    If($NoSplashScreen -ne $true){Update-PSDWizardProgressBar -Runspace $splashScreen -Indeterminate -Status ("Launching PSDwizard...")}
+    #Optimize UI when running in Windows
+    If ($AsAsyncJob)
+    {
+        Try{
+            $script:PSDWizard.Add_Closing( {
+                    #$_.Cancel = $true
+                    [System.Windows.Forms.Application]::Exit()
+                    Write-PSDLog -Message ("{0}: Closing PSD Wizard" -f ${CmdletName})
+                })
+
+            $async = $script:PSDWizard.Dispatcher.InvokeAsync( {
+                    Add-Type -AssemblyName System.Drawing, System.Windows.Forms, WindowsFormsIntegration
+
+                    # Enables a Window to receive keyboard messages correctly when it is opened modelessly from Windows Forms.
+                    [Void][System.Windows.Forms.Integration.ElementHost]::EnableModelessKeyboardInterop($script:PSDWizard)
+
+                    #make sure this display on top of every window
+                    $script:PSDWizard.Topmost = $true
+                    # https://blog.netnerds.net/2016/01/showdialog-sucks-use-applicationcontexts-instead/
+                    # ShowDialog shows the form as a modal window.
+                    # Modal meaning the form cannot lose focus until it's closed and the user can not click on other windows within the same application
+                    # With Show, the code proceeds to the line after the Show statement by spawning a new thread
+                    # With ShowDialog, it single threaded and does not continue until closed.
+                    # Running this without $appContext & ::Run would actually cause a really poor response.
+                    # https://docs.microsoft.com/en-us/dotnet/desktop/wpf/app-development/how-to-return-a-dialog-box-result?view=netframeworkdesktop-4.8
+
+                    $script:PSDWizard.Show() | Out-Null
+                    # This makes the form pop up
+                    $script:PSDWizard.Activate() | Out-Null
+
+                    If($splashScreen.isLoaded){Close-PSDWizardRunspaceScreen -Runspace $splashScreen}
+                    #Wait for the async is complete before continuing
+                    $async.Wait() | Out-Null
+
+                    ## Force garbage collection to start the wizard with lower RAM usage.
+                    [System.GC]::Collect() | Out-Null
+                    [System.GC]::WaitForPendingFinalizers() | Out-Null
+
+                    # Create an application context for it to all run within.
+                    # This helps with responsiveness, especially when exiting.
+                    $appContext = New-Object System.Windows.Forms.ApplicationContext
+                    [void][System.Windows.Forms.Application]::Run($appContext)
+                })
+        }Catch{
+            If($splashScreen.isLoaded){Update-PSDWizardProgressBar -Runspace $splashScreen -PercentComplete 100 -Status ("Error loading PSDWizard") -Color Red}
+            Write-PSDLog -Message ("{0}: Error loading PSDWizard: {1}" -f ${CmdletName}, $_.Exception.Message) -LogLevel 3
+        }
+    }
+    Else {
+
+        #make sure window is on top
+        $script:PSDWizard.Topmost = $true
+        #disable x button
+        $script:PSDWizard.Add_Closing( { $_.Cancel = $true })
+
+        If($splashScreen.isLoaded){Close-PSDWizardRunspaceScreen -Runspace $splashScreen}
+        #Slower method to present form for modal (no popups)
+        $script:PSDWizard.ShowDialog() | Out-Null
+    }
+
+    #NOTE: Function will not continue until wizard is closed
+
+    #Save all entered results back
+    Write-PSDLog -Message ("{0}: Running [Export-PSDWizardDefault -XMLContent `$script:Xaml -VariablePrefix {1} -Form `$script:PSDWizard]" -f ${CmdletName}, $GlobalElement.TSVariableFieldPrefix)
+    Export-PSDWizardResult -XMLContent $script:Xaml -VariablePrefix $GlobalElement.TSVariableFieldPrefix -Form $script:PSDWizard
+
+    If ($Passthru) {
+        # Return the form results to the caller
+        return $Global:WizardDialogResult
+    }
+}
+#endregion
+
 $exportModuleMemberParams = @{
     Function = @(
         'Expand-PSDWizardTSEnvValue'
@@ -5924,13 +6202,13 @@ $exportModuleMemberParams = @{
         'Format-PSDWizard'
 
         'ConvertTo-PSDWizardTSVar'
-        
+
         'Get-PSDWizardComputerName'
         'Get-PSDWizardCondition'
         'Get-PSDWizardDefinitions'
         'Get-PSDWizardElement'
         'Get-PSDWizardLocale'
-        'Get-PSDWizardSelectedApplications'
+        'Set-PSDWizardSelectedApplications'
         'Get-PSDWizardThemeDefinition'
         'Get-PSDWizardTimeZoneIndex'
         'Get-PSDWizardTSChildItem'
@@ -5946,15 +6224,16 @@ $exportModuleMemberParams = @{
 
         'Set-PSDWizardDefault'
         'Set-PSDWizardElement'
+        'Set-PSDWizardTSEnvListProperty'
         'Set-PSDWizardTSEnvProperty'
-        
+
         'Show-PSDWizard'
         'Show-PSDWizardDebugConsole'
 
         'Test-PSDWizardApplicationExist'
         'Test-PSDWizardTaskSequence'
         'Test-PSDWizardValidOS'
-        
+
     )
 }
 

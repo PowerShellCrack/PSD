@@ -352,6 +352,10 @@ foreach ($filter in $filters) {
 Copy-PSDFolder "$PSScriptRoot\Scripts\PSDWizardNew" "$psDeploymentFolder\Scripts\PSDWizardNew"
 #Get-ChildItem -Path "$psDeploymentFolder\Scripts\PSDWizard\*" -Recurse | Unblock-File
 Get-ChildItem -Path "$psDeploymentFolder\Scripts\PSDWizardNew\*" -Recurse | Unblock-File
+#remove PSDWizard.initialize.ps1
+If(test-path "$psDeploymentFolder\Scripts\PSDWizardNew\PSDWizard.initialize.ps1"){
+    Remove-Item -Path "$psDeploymentFolder\Scripts\PSDWizardNew\PSDWizard.initialize.ps1" -Force
+}
 
 # Copy the templates
 Copy-PSDFolder "$PSScriptRoot\Templates" "$psDeploymentFolder\Templates"

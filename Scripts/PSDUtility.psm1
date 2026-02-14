@@ -19,10 +19,11 @@
           Version - 0.0.1 - () - Added Import-PSDCertificate.
           Version - 0.0.2 - () - Replaced Get-PSDNtpTime
           Version - 0.0.3 - () - Added logic for smsts.log copy
-          Version - 0.0.4 - (PC) - Set Show-PSDInfo to minimize powershell calling form
-          Version - 0.0.5 - (PC) - Fixed caller output incase running outside of TS
+          Version - 0.0.4 - (PowershellCrack) - Set Show-PSDInfo to minimize powershell calling form
+          Version - 0.0.5 - (PowershellCrack) - Fixed caller output incase running outside of TS
           Version - 0.0.6 - (Mikael_Nystrom) - Added Clear-PSDDisk, Set-PSDEFIDiskpartition, Set-PSDRecoveryPartitionForMBR
           Version - 0.0.7 - (Mikael_Nystrom) - Removed a few Write-PSDLog
+          Version - 0.0.8 - (PowershellCrack) - Fixed robocopy to support spaces in path
 
           TODO:
           - Convert Forms into WPF and as separate runspace
@@ -516,7 +517,9 @@ function Copy-PSDFolder {
     $s = $source.TrimEnd("\")
     $d = $destination.TrimEnd("\")
     # Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Copying folder $source to $destination using XCopy"
-    $null = Start-Process xcopy -ArgumentList "$s $d /s /e /v /d /y /i" -NoNewWindow -Wait -Passthru -RedirectStandardOutput xcopy
+    #$null = Start-Process xcopy -ArgumentList "$s $d /s /e /v /d /y /i" -NoNewWindow -Wait -Passthru -RedirectStandardOutput xcopy
+    #FIX https://github.com/FriendsOfMDT/PSD/issues/205
+    $null = Start-Process xcopy -ArgumentList """$s"" ""$d"" /s /e /v /d /y /i" -NoNewWindow -Wait -Passthru -RedirectStandardOutput xcopy
 }
 
 function Test-PSDNetCon {
@@ -677,7 +680,7 @@ Function Show-PSDInfoForm {
             $Deployroot
         )
 
-        # Make PowerShell window disappear while using GUI
+        #ï¿½Makeï¿½PowerShellï¿½window disappearï¿½while using GUI
         $windowcode = '[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);'
         $asyncwindow = Add-Type -MemberDefinition $windowcode -name Win32ShowWindowAsync -namespace Win32Functions -PassThru
         $null = $asyncwindow::ShowWindowAsync((Get-Process -PID $pid).MainWindowHandle, 0)
@@ -896,7 +899,7 @@ Function Show-PSDInfo {
         [ValidateSet("Information", "Warning", "Error")]
         $Severity = "Information",
         $OSDComputername,
-        $Deployroot
+        $Deployroot = $global:psddsDeployRoot
     )
 
     [string]$xaml = @"
@@ -1521,16 +1524,16 @@ Function Show-PSDActionProgress {
     Param(
         $Message,
         $Step,
-        $MaxStep
+        $MaxStep = 100
     )
     $ts = New-Object -ComObject Microsoft.SMS.TSEnvironment
     $tsui = New-Object -ComObject Microsoft.SMS.TSProgressUI
-    $MaxStep = 100
     $tsui.ShowActionProgress($ts.Value("_SMSTSOrgName"), $ts.Value("_SMSTSPackageName"), $ts.Value("_SMSTSCustomProgressDialogMessage"), $ts.Value("_SMSTSCurrentActionName"), [Convert]::ToUInt32($ts.Value("_SMSTSNextInstructionPointer")), [Convert]::ToUInt32($ts.Value("_SMSTSInstructionTableSize")), $Message, $Step, $MaxStep)
 
     New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Deployment 4' -Name ProgressPercent -Value $Step -PropertyType DWORD -Force -ErrorAction SilentlyContinue
     New-ItemProperty -Path 'HKLM:\Software\Microsoft\Deployment 4' -Name ProgressText -Value $Message -PropertyType STRING -Force -ErrorAction SilentlyContinue
 }
+
 
 function Import-PSDCertificate {
     Param(

@@ -177,9 +177,7 @@ It is possible to add or remove pages in the PSD Wizard. Since a UDI wizard is n
 
 ## NEW FEATURES
 
-In addition to the new wizard, there is another module released:
-
-- PSDStartLoader
+Included in PSD 2.30, another module is used called: **PSDStartLoader**
 
 The PSDStartLoader is a UI driven prestart menu (replaces the CLI prestart menu). This module can be activated within the bootstrap.ini
 
@@ -190,6 +188,25 @@ The PSDStartLoader is a UI driven prestart menu (replaces the CLI prestart menu)
 While the menu is loaded; you can use the keyboard's arrow keys to control the position of the menu. It defaults to the right side of screen. To preset the position, set the variable **PSDPrestartPosition** with one of these values: _VerticalLeft_, _VerticalRight_, _HorizontalTop_, _HorizontalBottom_
 
 ![menuonly](.images/prestartmenuloader_menuonly.png)
+
+In addition to the PSDStartLoader, a new feature was added to the PSDWizard called: **PSDWizard Profile Selection Screen**
+
+The screen allows you to preconfigure sections within the CustomeSettings.ini to preload the PSDWizard with rules. This is ran BEFORE the PSDWizard loads allowing the Wziard to look different for each profile
+The section must not exist in Priority list within the _Settings_ section, this is becuase it would be processed normally. 
+
+>TIP: In a way this replaces the custom MDT mod for loading different CustomSettings.ini files.
+
+> NOTE: Current process will overwrite any conflicting rules that are process during boot up. Any defualt section rules not overwritten will still be processed. 
+
+An example for this would be: _Server deployments_. Where you could preselect a tasksequence, computer name, and don't display the applications and Intune group pages
+
+To enable this feature set: 
+
+**SkipPSDWizardProfileSelection** --> YES
+
+If it fins a section, it will display it in a dropdown list
+
+
 
 ### Hidden Features
 
