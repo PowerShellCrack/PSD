@@ -504,6 +504,63 @@ Function Invoke-PSDRule {
 	}
 }
 
+Function Resolve-PSDSubsectionName {
+	[CmdletBinding()]
+	Param(
+		[Parameter(Mandatory = $True)]
+		[string]$Name
+	)
+
+	# Resolve MDT-style tokens before dispatching dynamic sections such as Laptop-%IsLaptop%.
+	$resolvedName = $Name
+	for ($iteration = 0; $iteration -lt 10 -and $resolvedName -match '%([^%]+)%'; $iteration++) {
+		$propertyName = $Matches[1]
+		$propertyValue = (Get-Item -Path "tsenv:$propertyName" -ErrorAction SilentlyContinue).Value
+
+		if ($null -eq $propertyValue -or [string]::IsNullOrEmpty([string]$propertyValue)) {
+			Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Unable to resolve subsection property $propertyName in $Name" -LogLevel 2
+			break
+		}
+
+		$resolvedName = $resolvedName.Replace("%$propertyName%", [string]$propertyValue)
+	}
+
+	return $resolvedName
+}
+
+Function Resolve-PSDSettingValue {
+	<#
+	.SYNOPSIS
+		Expands MDT-style property tokens in a rule value.
+	.DESCRIPTION
+		Resolves values such as %AssetTag% from the task sequence environment
+		before PSDGather writes the value to a task sequence variable.
+	.PARAMETER Value
+		Rule value to expand.
+	.OUTPUTS
+		The expanded value, retaining unresolved tokens for later processing.
+	#>
+	[CmdletBinding()]
+	Param(
+		[Parameter(Mandatory = $True)]
+		[string]$Value
+	)
+
+	$resolvedValue = $Value
+	for ($iteration = 0; $iteration -lt 10 -and $resolvedValue -match '%([^%]+)%'; $iteration++) {
+		$propertyName = $Matches[1]
+		$propertyValue = (Get-Item -Path "tsenv:$propertyName" -ErrorAction SilentlyContinue).Value
+
+		if ($null -eq $propertyValue -or [string]::IsNullOrEmpty([string]$propertyValue)) {
+			break
+		}
+
+		$resolvedValue = $resolvedValue.Replace("%$propertyName%", [string]$propertyValue)
+	}
+
+	return $resolvedValue
+}
+
 Function Get-PSDSettings {
 	[CmdletBinding()]
 	Param(
@@ -537,25 +594,28 @@ Function Get-PSDSettings {
 		}
 
 		if ($section.Contains("Subsection")) {
-			Invoke-PSDRule $section["Subsection"]
+			$subsectionName = Resolve-PSDSubsectionName -Name $section["Subsection"]
+			Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing subsection $subsectionName"
+			Invoke-PSDRule $subsectionName
 		}
 
 		# Process properties
 		if (-not $skipProperties) {
 			$section.Keys | ForEach-Object {
 				$sectionVar = $_
+				$sectionValue = Resolve-PSDSettingValue -Value $section[$sectionVar]
 				$v = $global:variables | Where-Object { $_.id -ieq $sectionVar }
 				if ($v) {
-					if ((Get-Item tsenv:$v).Value -eq $section[$sectionVar]) {
+					if ((Get-Item tsenv:$($v.id)).Value -eq $sectionValue) {
 						# Do nothing, value unchanged
 					}
-					if ((Get-Item tsenv:$v).Value -eq "" -or $v.overwrite -eq "true") {
+					if ((Get-Item tsenv:$($v.id)).Value -eq "" -or $v.overwrite -eq "true") {
 						$Value = $((Get-Item tsenv:$($v.id)).Value)
 						if ($value -eq '') { $value = "Empty" }
-						Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Changing property $($v.id) to $($section[$sectionVar]), was $Value"
-						Set-Item tsenv:$($v.id) -Value $section[$sectionVar]
+						Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Changing property $($v.id) to $sectionValue, was $Value"
+						Set-Item tsenv:$($v.id) -Value $sectionValue
 					}
-					elseif ((Get-Item tsenv:$v).Value -ne "") {
+					elseif ((Get-Item tsenv:$($v.id)).Value -ne "") {
 						Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Ignoring new value for $($v.id)"
 					}
 				}
@@ -564,9 +624,9 @@ Function Get-PSDSettings {
 					$v = $global:variables | Where-Object { $_.id -ieq $trimVar }
 					if ($v) {
 						if ($v.type -eq "list") {
-							Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding $($section[$sectionVar]) to $($v.id)"
+							Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding $sectionValue to $($v.id)"
 							$n = @((Get-Item tsenvlist:$($v.id)).Value)
-							$n += [String] $section[$sectionVar]
+							$n += [String] $sectionValue
 							Set-Item tsenvlist:$($v.id) -Value $n
 						}
 					}

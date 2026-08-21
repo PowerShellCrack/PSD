@@ -52,6 +52,32 @@ param (
     [switch] $Debug
 )
 
+# Hide only the WinPE console host; PSD WPF interfaces remain visible and -Debug keeps the console available.
+if (-not $Debug -and $env:SYSTEMDRIVE -eq 'X:') {
+    try {
+        if (-not ('PSDConsoleWindow' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class PSDConsoleWindow {
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
+
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr windowHandle, int command);
+}
+'@
+        }
+        $consoleWindow = [PSDConsoleWindow]::GetConsoleWindow()
+        if ($consoleWindow -ne [IntPtr]::Zero) {
+            $null = [PSDConsoleWindow]::ShowWindow($consoleWindow, 0)
+        }
+    }
+    catch {
+        # Console hiding is cosmetic and must never block deployment startup.
+    }
+}
+
 $DeploymentToolkitVersion = "0.2.3.6"
 # OSDProgress=Native
 # OSDProgress=Modern
@@ -439,7 +465,16 @@ else{
 
     # Check for WelcomeWizard
     Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Check if we should run PSDPrestart"
-    if($tsenv:SkipBDDWelcome -ne "YES"){
+    # The dedicated setting controls prestart independently; fall back to SkipBDDWelcome for older configurations.
+    if([string]::IsNullOrWhiteSpace($tsenv:SkipPSDPrestartMenu)){
+        $RunPSDPrestart = $tsenv:SkipBDDWelcome -ne "YES"
+    }
+    else{
+        $RunPSDPrestart = $tsenv:SkipPSDPrestartMenu -ne "YES"
+    }
+    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): SkipPSDPrestartMenu=$($tsenv:SkipPSDPrestartMenu), SkipBDDWelcome=$($tsenv:SkipBDDWelcome), RunPSDPrestart=$RunPSDPrestart"
+
+    if($RunPSDPrestart){
         if($BootfromWinPE -eq $true){
             if((Test-Path -Path X:\Deploy\Scripts\PSDPrestart.ps1) -eq $true){
                 Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): We should run PSDPrestart"
@@ -520,8 +555,10 @@ else{
                         #load the PSDStartLoader module
                         Import-Module PSDStartLoader.psm1 -Global -Force -Verbose:$False
 
-                        #only initialize the prestart menu (not the loader)
-                        $PSDStartLoader = New-PSDStartLoaderPrestartMenu -Position $Position -OnTop
+                        Write-PSDBootInfo -Message "Launching PSD Prestart Menu. Select an action, then press Continue to begin the PSD deployment process."
+
+                        # Continue closes and disposes the prestart runspace before PSDWizard starts.
+                        $PSDStartLoader = New-PSDStartLoaderPrestartMenu -Position $Position -OnTop -Wait
 
                         # Hide all non functioning buttons
                         #'btnWipeDisk','btnOpenDisk','btnAddStaticIP' | Set-PSDStartLoaderElement -Runspace $PSDStartLoader -Property Visibility -Value Hidden
@@ -537,7 +574,7 @@ else{
         }
     }
     else{
-        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): We should not run PSDPrestart.ps1, skipping"
+        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): SkipPSDPrestartMenu requested that PSDPrestart.ps1 be skipped"
     }
 
     # Set-PSDDebugPause -Prompt "Before checking for media deployment"
@@ -805,7 +842,11 @@ else{
     # Process wizard
     $PSDWizard = "PSDWizardNew"
     Write-PSDBootInfo -SleepSec 1 -Message "Loading the PSD Deployment Wizard"
-    if($tsenv:PSDPrestartMode -eq "FullScreen"){Update-PSDStartLoaderProgressBar -Runspace $PSDStartLoader -Status "Loading the PSD Deployment Wizard" -PercentComplete 100}
+    if($tsenv:PSDPrestartMode -eq "FullScreen"){
+        Update-PSDStartLoaderProgressBar -Runspace $PSDStartLoader -Status "Loading the PSD Deployment Wizard" -PercentComplete 100
+        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Closing FullScreen loader before starting PSDWizard"
+        Close-PSDStartLoader -Runspace $PSDStartLoader
+    }
     Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Running the command Import-Module $PSDWizard -ErrorAction Stop -Force -Verbose:`$False"
     Import-Module $PSDWizard -ErrorAction Stop -Force -Verbose:$False
 
@@ -833,14 +874,14 @@ else{
     }
 
     # Start the wizard
-    Write-PSDLog -Message ("$($MyInvocation.MyCommand.Name): Running [Show-PSDWizard -ResourcePath {0} -AsAsyncJob:{1} -Theme {2} -NoSplashScreen:{3} -Passthru -Debug:{4}]" -f $PSDWizardPath,(!$Global:BootfromWinPE),$PSDWizardTheme,$PSDWizardNoSplashScreen,$PSDDebug)
-    # $result = Show-PSDWizard -ResourcePath $PSDWizardPath -AsAsyncJob:(!$Global:BootfromWinPE) -Passthru -Debug:$PSDDebug
-    $result = Show-PSDWizard -ResourcePath $PSDWizardPath -AsAsyncJob:(!$Global:BootfromWinPE) -Theme $PSDWizardTheme -NoSplashScreen:$PSDWizardNoSplashScreen -Passthru -Debug:$PSDDebug 
+    Write-PSDLog -Message ("$($MyInvocation.MyCommand.Name): Running [Show-PSDWizard -ResourcePath {0} -ControlPath {1} -Theme {2} -NoSplashScreen:{3} -Passthru -Debug:{4}]" -f $PSDWizardPath,$control,$PSDWizardTheme,$PSDWizardNoSplashScreen,$PSDDebug)
+    $result = Show-PSDWizard -ResourcePath $PSDWizardPath -ControlPath $control -Theme $PSDWizardTheme -NoSplashScreen:$PSDWizardNoSplashScreen -Passthru -Debug:$PSDDebug 
 
-    # Noting was selected...
-    if ($result -eq $false){
-        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Cancelling, aborting..."
-        Show-PSDInfo -Message "Cancelling, aborting..." -Severity Information -OSDComputername $OSDComputername -Deployroot $global:psddsDeployRoot
+    if ($result -eq $false -or $result.Result -eq 'Cancelled'){
+        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Deployment cancelled in PSD Wizard."
+        Write-PSDBootInfo -SleepSec 0 -Message "Deployment cancelled"
+        if($tsenv:PSDPrestartMode -eq "FullScreen" -and -not $PSDStartLoader.RunspaceDisposed){Update-PSDStartLoaderProgressBar -Runspace $PSDStartLoader -Status "Deployment cancelled" -PercentComplete 100}
+        Show-PSDInfo -Message "Deployment cancelled" -Severity Information -OSDComputername $OSDComputername -Deployroot $global:psddsDeployRoot
         Stop-PSDLogging
         Clear-PSDInformation
         Start-Process PowerShell -Wait
@@ -917,7 +958,7 @@ else{
     }
     Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Done in PSDStart for now, handing over to Task Sequence by running $tsEngine\TSMBootstrap.exe /env:SAStart"
     Write-PSDBootInfo -SleepSec 0 -Message "Running Task Sequence"
-    if($tsenv:PSDPrestartMode -eq "FullScreen"){Update-PSDStartLoaderProgressBar -Runspace $PSDStartLoader -Status "Running Task Sequence" -PercentComplete 100}
+    if($tsenv:PSDPrestartMode -eq "FullScreen" -and -not $PSDStartLoader.RunspaceDisposed){Update-PSDStartLoaderProgressBar -Runspace $PSDStartLoader -Status "Running Task Sequence" -PercentComplete 100}
 
     # close PSDStartLoaderDebugMenu
     Close-PSDStartLoaderDebugMenu
@@ -926,7 +967,7 @@ else{
     $result = Start-Process -FilePath "$tsEngine\TSMBootstrap.exe" -ArgumentList "/env:SAStart" -Wait -Passthru
     
     #close prestart loader if found
-    If($PSDStartLoader.isLoaded){
+    If($PSDStartLoader.isLoaded -and -not $PSDStartLoader.RunspaceDisposed){
         Close-PSDStartLoader -Runspace $PSDStartLoader
         Close-PSDStartLoaderDebugMenu
     }
@@ -1006,7 +1047,7 @@ Switch ($result.ExitCode){
         Clear-PSDInformation
 
         #close prestart loader if found
-        If($PSDStartLoader.isLoaded){
+        If($PSDStartLoader.isLoaded -and -not $PSDStartLoader.RunspaceDisposed){
             Close-PSDStartLoader -Runspace $PSDStartLoader
             Close-PSDStartLoaderDebugMenu
         }

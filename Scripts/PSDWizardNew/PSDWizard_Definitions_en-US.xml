@@ -12,7 +12,7 @@
 			<Feature Name="RoleSelection" ElementName="" Enabled="False" />
 		</EnableFeatureSupport>
 		-->
-		<TSVariableFieldPrefix>TS_</TSVariableFieldPrefix>
+		<TSVariableFieldPrefix>TSEnv_</TSVariableFieldPrefix>
 	</Global>
 
     <WelcomeWizard id="Welcome" title="Start">
@@ -22,7 +22,7 @@
 	</WelcomeWizard>
 
 	<Pane id="Readiness" title="Deployment Readiness">
-		<Condition><![CDATA[UCASE(Property("SkipDeployReadiness")) <> "YES" ]]></Condition>
+		<Condition><![CDATA[UCASE(Property("SkipDeployReadiness")) <> "YES" and UCASE(Property("SkipReadinessCheck")) <> "YES" ]]></Condition>
 		<Validation><![CDATA[ Property("Model") in Properties("SupportedModels(*)")]]></Validation>
 		<Validation><![CDATA[ Property(IsEUFI) == "True"]]></Validation>
 		<MainTitle><![CDATA[ "Deployment Readiness" ]]></MainTitle>

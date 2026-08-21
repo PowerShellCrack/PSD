@@ -2362,32 +2362,37 @@ Function New-PSDStartLoaderPrestartMenu
 
     #invoke scriptblock in runspace
     $PowerShellCommand.Runspace = $PSDRunSpace
+    If(-Not($Wait)) {
+        # Register before BeginInvoke so an immediate Continue cannot outrun cleanup.
+        Register-ObjectEvent -InputObject $syncHash.Runspace `
+            -EventName 'AvailabilityChanged' `
+            -MessageData $PowerShellCommand `
+            -Action {
+                if($Sender.RunspaceAvailability -eq "Available")
+                {
+                    $Event.MessageData.Dispose()
+                    $Sender.Close()
+                    $Sender.Dispose()
+                    Unregister-Event -SubscriptionId $EventSubscriber.SubscriptionId -ErrorAction SilentlyContinue
+                }
+            } | Out-Null
+    }
+
     $AsyncHandle = $PowerShellCommand.BeginInvoke()
 
     If($Wait){
-        #wait until runspace is completed before ending
-        do {
-            Start-sleep -m 100
+        try {
+            # Continue closes the dialog, which completes the asynchronous invocation.
+            $null = $PowerShellCommand.EndInvoke($AsyncHandle)
         }
-        while (!$AsyncHandle.IsCompleted)
-        #end invoked process
-        $null = $PowerShellCommand.EndInvoke($AsyncHandle)
+        finally {
+            # Synchronous callers own cleanup so no prestart runspace survives into PSDWizard or task-sequence reboot.
+            $PowerShellCommand.Dispose()
+            $PSDRunSpace.Close()
+            $PSDRunSpace.Dispose()
+            $syncHash.RunspaceDisposed = $true
+        }
     }
-    #cleanup registered object
-    Register-ObjectEvent -InputObject $syncHash.Runspace `
-            -EventName 'AvailabilityChanged' `
-            -Action {
-
-                    if($Sender.RunspaceAvailability -eq "Available")
-                    {
-                        $Sender.Closeasync()
-                        $Sender.Dispose()
-                        # Speed up resource release by calling the garbage collector explicitly.
-                        # Note that this will pause *all* threads briefly.
-                        [GC]::Collect()
-                    }
-
-                } | Out-Null
 
     If($Data.Error){Write-PSDLog -Message ("{0}: Debug Menu errored: {1}" -f ${CmdletName}, $Data.Error) -LogLevel 3}
     Else{Write-PSDLog -Message ("{0}: Debug Menu closed" -f ${CmdletName})}
@@ -2430,7 +2435,7 @@ Function New-PSDStartLoader
     #$syncHash.TSProgressStatus = {Get-PSDStartTSProgress}
     $syncHash.DartTools = Test-PSDStartLoaderHasDartPE
     $syncHash.MenuPosition = $MenuPosition
-    $syncHash.ShowPrestartMenu = {New-PSDStartLoaderPrestartMenu -Position $args[0] -OnTop}
+    $syncHash.ShowPrestartMenu = {New-PSDStartLoaderPrestartMenu -Position $args[0] -OnTop -Wait}
     $syncHash.CheckboxStyle = Add-PSDStartLoaderCheckboxStyle
     $syncHash.DeviceInfoCommand = {Get-PSDLocalInfo -PassThru}
     $syncHash.NetworkInfoCommand  = {Get-PSDStartLoaderInterfaceDetails}
@@ -2791,22 +2796,8 @@ Function New-PSDStartLoader
     #invoke scriptblock in runspace
     $PowerShellCommand.Runspace = $PSDRunSpace
     $AsyncHandle = $PowerShellCommand.BeginInvoke()
-
-    #cleanup registered object
-    Register-ObjectEvent -InputObject $syncHash.Runspace `
-            -EventName 'AvailabilityChanged' `
-            -Action {
-
-                    if($Sender.RunspaceAvailability -eq "Available")
-                    {
-                        $Sender.Closeasync()
-                        $Sender.Dispose()
-                        # Speed up resource release by calling the garbage collector explicitly.
-                        # Note that this will pause *all* threads briefly.
-                        [GC]::Collect()
-                    }
-
-                } | Out-Null
+    $syncHash.PowerShell = $PowerShellCommand
+    $syncHash.AsyncHandle = $AsyncHandle
 
     If($Data.Error){Write-PSDLog -Message ("{0}: PSDStartLoader errored: {1}" -f ${CmdletName}, $Data.Error) -LogLevel 3}
     Else{Write-PSDLog -Message ("{0}: PSDStartLoader closed" -f ${CmdletName})}
@@ -3199,9 +3190,33 @@ function Close-PSDStartLoader
     [string]${CmdletName} = $MyInvocation.MyCommand
 
     Write-PSDLog -Message ("{0}: Closing PSDStartLoader" -f ${CmdletName})
-    $Runspace.Window.Dispatcher.Invoke([action]{
-      $Runspace.$Dispatcher.close()
-    },'Normal')
+    # Make repeated cleanup calls harmless after the pre-wizard handoff has already disposed the loader.
+    if ($Runspace.RunspaceDisposed) {
+        return
+    }
+
+    try {
+        if ($Runspace.Window -and -not $Runspace.isClosed) {
+            $Runspace.Window.Dispatcher.Invoke([action]{
+                $Runspace.$Dispatcher.Close()
+            },'Normal')
+        }
+
+        if ($Runspace.PowerShell -and $Runspace.AsyncHandle) {
+            $null = $Runspace.PowerShell.EndInvoke($Runspace.AsyncHandle)
+        }
+    }
+    finally {
+        if ($Runspace.PowerShell) {
+            $Runspace.PowerShell.Dispose()
+        }
+        if ($Runspace.Runspace) {
+            $Runspace.Runspace.Close()
+            $Runspace.Runspace.Dispose()
+        }
+        $Runspace.RunspaceDisposed = $true
+        Write-PSDLog -Message ("{0}: PSDStartLoader runspace disposed" -f ${CmdletName})
+    }
 
 }
 #endregion
