@@ -10,6 +10,7 @@
 - Use PSD's `TSEnv:` PSDrive for all production TSEnv reads, writes, and clears without COM fallback.
 - Require explicit `-DevelopmentMode` for local simulation; fail clearly if a normal wizard launch has no PSD `TSEnv:` drive.
 - Bind Classic and Dark `TSEnv_*` XAML controls from a synchronized, case-insensitive snapshot of PSD's processed `TSEnv:` values, and run readiness scripts only when their page is present.
+- Reprocess the selected Task Sequence's `CustomSettings.ini` section and refresh dependent TSEnv fields, OU presentation, domain/workgroup mode, and application choices.
 
 # 2.3.6 - Dec 29, 2024
 
