@@ -2,15 +2,24 @@
 
 ## 3.0.0 - Sept 27, 2026
 
-- PSDWizardNew is now a runspace; making it more responsive
+- PSDWizardNew is now a runspace; making it more responsive.
 - Filter selectable applications using `WizardSelectionProfile` and build custom wizard option lists from processed numbered task-sequence variables.
 - Complete without opening a blank wizard when processed TSEnv settings skip every pane.
 - Validate `TaskSequenceID` and its `ts.xml` before starting the task-sequence engine.
 - Detect an active task sequence from the `TSEnv:` PSDrive when the SMS TSEnvironment COM object is unavailable.
 - Use PSD's `TSEnv:` PSDrive for all production TSEnv reads, writes, and clears without COM fallback.
 - Require explicit `-DevelopmentMode` for local simulation; fail clearly if a normal wizard launch has no PSD `TSEnv:` drive.
-- Bind Classic and Dark `TSEnv_*` XAML controls from a synchronized, case-insensitive snapshot of PSD's processed `TSEnv:` values, and run readiness scripts only when their page is present.
-- Reprocess the selected Task Sequence's `CustomSettings.ini` section and refresh dependent TSEnv fields, OU presentation, domain/workgroup mode, and application choices.
+- Bind Classic and Dark `TSEnv_*` XAML controls from a synchronized, case-insensitive snapshot of PSD's processed `TSEnv:` values.
+- Reprocess the selected Task Sequence's `CustomSettings.ini` section and refresh dependent fields, OU presentation, domain/workgroup mode, applications, and role pages.
+- Restore inherited numbered choice lists and role-skip defaults when a selected Task Sequence omits its own values.
+- Validate each active page before allowing Next; enforce computer-name and administrator-password confirmation rules, and resolve wildcard `Properties()` pane validations.
+- Run readiness checks from zero-padded `PSDReadinessCheck###` entries, show results, and honor skip/bypass only on the Readiness page.
+- Add Classic and Dark Roles and Features panes using `SkipRoleSelection` and the selected OS's Windows 11 or ServerManager catalog.
+- Navigate only visible panes so Task Sequence-specific Role visibility does not break Next, Back, or Finish.
+- Resolve Readiness scripts from PSD's deployment-root `PSDResources` folder.
+- Derive the DevelopmentMode `Control` folder from `ResourcePath` instead of probing machine-specific drive paths.
+- Normalize DevelopmentMode and production inputs before one shared `SyncHash`/Control-data/locale initialization path.
+- Write Wizard messages to a dedicated `PSDWizardNew.log` alongside the standard PSD log.
 
 # 2.3.6 - Dec 29, 2024
 
