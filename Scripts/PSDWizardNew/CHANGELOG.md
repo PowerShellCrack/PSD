@@ -6,6 +6,7 @@
 - Added native MACADDRESS and ASSETTAG support in computername (https://github.com/FriendsOfMDT/PSD/issues/167)
 
 
+
 ## 2.3.3 - May 1, 2024
 
 - (PC) Fixed null TSenv properties; cause PSDWizard to not load

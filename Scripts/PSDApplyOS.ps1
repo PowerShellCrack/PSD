@@ -99,9 +99,23 @@ Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Creating $scratchPath as
 # Apply the image
 # Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Apply the image"
 Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Applying image $image index $index to $($tsenv:OSVolume)"
-Show-PSDActionProgress -Message "Applying $($image | Split-Path -Leaf) " -Step "1"
+Show-PSDActionProgress -Message "Applying Operating System " -Step "1"
 $startTime = Get-Date
-Expand-WindowsImage -ImagePath $image -Index $index -ApplyPath "$($tsenv:OSVolume):\" -ScratchDirectory $scratchPath -CheckIntegrity
+#Expand-WindowsImage -ImagePath $image -Index $index -ApplyPath "$($tsenv:OSVolume):\" -ScratchDirectory $scratchPath -CheckIntegrity
+
+#capture the progress of the Expand-WindowsImage command
+$result = Start-Process dism -ArgumentList "/Apply-Image /ImageFile:$image /Index:$index /ApplyDir:`"$($tsenv:OSVolume):\`" /CheckIntegrity" -PassThru -Wait -WindowStyle Hidden `
+    -RedirectStandardError $env:temp\dism.errout -RedirectStandardOutput $env:temp\dism.stdout
+while ($result.HasExited -eq $false) {
+    $stdout = Get-Content $env:temp\dism.stdout
+    $stdout | Select-Object -Last 2 | ForEach-Object {
+        #$percent = $_ -replace '\[','' -replace '\]','' -replace ' ','' -replace '%',''  -replace '=',''
+        #only keep the number (eg 10.00 --> 100, and 100.00 --> 1000)
+        $percent = $_ -replace '\D',''
+        Show-PSDActionProgress -Message "Extracting $($image | Split-Path -Leaf) " -Step $percent -MaxStep 1000
+    }
+}
+
 $duration = $(Get-Date) - $startTime
 Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Time to apply image: $($duration.ToString('hh\:mm\:ss'))"
 
