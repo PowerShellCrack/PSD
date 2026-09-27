@@ -12,9 +12,11 @@
           Contact: @Mikael_Nystrom , @jarwidmark , @mniehaus , @AndHammarskjold
           Primary: @jarwidmark 
           Created: 
-          Modified: 2019-05-17
+          Modified: 2026-03-19
 
           Version - 0.0.1 - () - Finalized functional version 1.
+          Version - 0.0.2 - () - Return code Application installation
+          Version - 0.0.3 - () - Fix for dependency processing
 
           TODO:
 
@@ -27,7 +29,7 @@ param (
 )
 
 # Set scriptversion for logging
-$ScriptVersion = "0.0.1"
+$ScriptVersion = "0.0.3"
 
 # Load core modules
 Import-Module PSDUtility
@@ -149,6 +151,7 @@ function Install-PSDApplication{
 
             # Install the app
             Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Install the app"
+            $result = $null
             switch -Wildcard ($app.CommandLine) {
                 "" {
                     Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): No command line specified (bundle)."
@@ -196,6 +199,10 @@ function Install-PSDApplication{
                 $tsenv:SMSTSRetryRequested = "true"
                 return 3010
             }
+            elseif ($null -ne $result) {
+                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Return code is $($result.ExitCode)"
+                return $($result.ExitCode)
+            }
         }
     }
 
@@ -216,14 +223,14 @@ $toolRoot = Get-PSDContent "Tools\$($tsenv:Architecture)"
 
 
 # Single application install initiated by a Task Sequence action
-# Note: The ApplicationGUID variable isn�t set globally. It�s set only within the scope of the Install Application action/step. One of the hidden mysteries of the task sequence engine :)
+# Note: The ApplicationGUID variable isn't set globally. It's set only within the scope of the Install Application action/step. One of the hidden mysteries of the task sequence engine :)
 
 Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Checking for single application install step"
 If ($tsenv:ApplicationGUID -ne "") {
     Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Mandatory Single Application install indicated. Guid is $($tsenv:ApplicationGUID)"
-    Install-PSDApplication $tsenv:ApplicationGUID
+    $return = Install-PSDApplication $tsenv:ApplicationGUID
     Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Mandatory Single Application installed, exiting application step"
-    Exit
+    Exit $return
 }
 else{
     Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): No Single Application install found. Continue with checking for dynamic applications"

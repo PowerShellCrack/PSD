@@ -98,7 +98,7 @@ DeploymentShare
 - **PSDWizardLogo**: Adds a logo to the top left corner of the wizard and the Welcome page (e.g., PSDWizardLogo=%SCRIPTROOT%\powershell.png).
 - **SkipPSDWelcome**: YES or NO. Toggles the Welcome splash screen.
 - **SkipDeployReadiness**: YES or NO. Toggles the deployment readiness page.
-- **SkipReadinessCheck**: YES or NO. Skips any readiness checks. This option is ignored if SkipDeployReadiness is NO, and the readiness check will not run.
+- **SkipReadinessCheck**: YES or NO. When set to YES, omits the Deployment Readiness page. The legacy SkipDeployReadiness=YES setting also omits this page.
 - **SkipPSDWizardSplashScreen**: YES or NO. Toggles the splash screen before launching the wizard. If ZeroTouch deployment is performed, be sure to disable this too.
 - **PSDReadinessAllowBypass**: YES or NO. Allows the PSD Wizard to continue even if the readiness check returns false.
 - **PSDReadinessScript**: Place PowerShell script in %DEPLOYROOT%\PSDResources\Readiness folder.
@@ -183,7 +183,8 @@ In addition to the new wizard, there is another module released:
 
 The PSDStartLoader is a UI driven prestart menu (replaces the CLI prestart menu). This module can be activated within the bootstrap.ini
 
-- **PSDPrestartMode** --> _Native_,_PrestartMenu_, or _FullScreen_. The Prestartmenu launches a menu within the boot sequence that provides other menus such as diskinfo, diskwipe, and static ip configuration. It can also detect if DART and CMtrace is installed in PE and will display a button for each
+- **SkipPSDPrestartMenu** --> _YES_ or _NO_. Controls only the PSD prestart menu. When omitted, `SkipBDDWelcome` is used for backward compatibility.
+- **PSDPrestartMode** --> _Native_, _PrestartMenu_, or _FullScreen_. The PrestartMenu launches before PSDWizard and provides disk information, disk wipe, static IP configuration, DaRT, and CMTrace actions. Select Continue to close and dispose the menu before PSDWizard starts.
 
 > **IMPORTANT**: The _FullScreen_ option is still in BETA; it replaces the bginfo background with a UI backdrop (that will eventually monitor the TaskSequence in a modern fashion potentially replacing the task sequence progress bar). It to will present the prestart menu as well. _Native_ puts it back to CLI version.
 

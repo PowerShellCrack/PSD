@@ -24,9 +24,8 @@
 		  Version - 0.0.6 - (PC) - Removed loging to show "TODO", no point in showing things that does not work yet
 		  Version - 0.0.7 - (MN) - Added rule to VMware modelalias section, all VMware modelalias will now be "WMware"
 		  Version - 0.0.8 - (MN) - Added rule to VMware modelalias section, replacing the "," with "_", replace " " with "_"
-
-          TODO:
-
+          Version - 0.0.9 - Added BitLocker info. Credits: BlackCatDeployment on GitHub (Part of closed PR 237)
+		  Version - 0.1.0 - Modified so that Hyper-V running in BIOS mode will now return SystemAlias as Hyper-V BIOS
 .Example
 #>
 
@@ -93,7 +92,7 @@ Function Get-PSDLocalInfo {
 		$LocalInfo['IsSFF'] = "False"
 		$LocalInfo['IsTablet'] = "False"
 		Get-CimInstance -ClassName Win32_SystemEnclosure | ForEach-Object {
-			$LocalInfo['AssetTag'] = $_.SMBIOSAssetTag.Trim()
+			$LocalInfo['AssetTag'] = "$($_.SMBIOSAssetTag)".Trim()
 			if ($_.ChassisTypes[0] -in "8", "9", "10", "11", "12", "14", "18", "21") { $LocalInfo['IsLaptop'] = "True"; $LocalInfo['Chassis'] = "Laptop"}
 			if ($_.ChassisTypes[0] -in "3", "4", "5", "6", "7", "15", "16") { $LocalInfo['IsDesktop'] = "True"; $LocalInfo['Chassis'] = "Desktop"}
 			if ($_.ChassisTypes[0] -in "23") { $LocalInfo['IsServer'] = "True"; $LocalInfo['Chassis'] = "Server"}
@@ -102,7 +101,7 @@ Function Get-PSDLocalInfo {
 		}
 
 		Get-CimInstance -ClassName Win32_BIOS | ForEach-Object {
-			$LocalInfo['SerialNumber'] = $_.SerialNumber.Trim()
+			$LocalInfo['SerialNumber'] =  "$($_.SerialNumber)".Trim()
 		}
 
 		if ($env:PROCESSOR_ARCHITEW6432) {
@@ -127,37 +126,36 @@ Function Get-PSDLocalInfo {
 			$LocalInfo['SupportsSLAT'] = $_.SecondLevelAddressTranslationExtensions
 		}
 
-		# TODO: Capable architecture
 
 		Get-CimInstance -ClassName Win32_ComputerSystem | ForEach-Object {
-			$LocalInfo['Manufacturer'] = $_.Manufacturer.Trim()
-			$LocalInfo['Make'] = $_.Manufacturer.Trim()
-			$LocalInfo['Model'] = $_.Model.Trim()
+			$LocalInfo['Manufacturer'] = "$($_.Manufacturer)".Trim()
+			$LocalInfo['Make'] = "$($_.Manufacturer)".Trim()
+			$LocalInfo['Model'] = "$($_.Model)".Trim()
 			$LocalInfo['Memory'] = [int] ($_.TotalPhysicalMemory / 1024 / 1024)
 		}
 
 		if ($LocalInfo['Make'] -eq "") {
-			$Make = (Get-CimInstance -ClassName Win32_BaseBoard | Select-Object -ExpandProperty Manufacturer).Trim()
+			$Make = "$(Get-CimInstance -ClassName Win32_BaseBoard | Select-Object -ExpandProperty Manufacturer)".Trim()
 			$LocalInfo['Make'] = $Make
 			$LocalInfo['Manufacturer'] = $Make
 		}
 
 		if ($LocalInfo['Model'] -eq "") {
-			$LocalInfo['Model'] = (Get-CimInstance -ClassName Win32_BaseBoard | Select-Object -ExpandProperty Product).Trim()
+			$LocalInfo['Model'] = "$(Get-CimInstance -ClassName Win32_BaseBoard | Select-Object -ExpandProperty Product)".Trim()
 		}
 
 		Get-CimInstance -ClassName Win32_ComputerSystemProduct | ForEach-Object {
-			$LocalInfo['UUID'] = $_.UUID.Trim()
-			$LocalInfo['CSPVersion'] = $_.Version.Trim()
+			$LocalInfo['UUID'] = "$($_.UUID)".Trim()
+			$LocalInfo['CSPVersion'] = "$($_.Version)".Trim()
 		}
 
 		Get-CimInstance -ClassName MS_SystemInformation -NameSpace root\WMI | ForEach-Object {
-			$LocalInfo['BaseBoardProduct'] = $_.BaseBoardProduct.Trim()
-			$LocalInfo['SystemSku'] = $_.SystemSku.Trim()
+			$LocalInfo['BaseBoardProduct'] = "$($_.BaseBoardProduct)".Trim()
+			$LocalInfo['SystemSku'] = "$($_.SystemSku)".Trim()
 		}
 
 		Get-CimInstance -ClassName Win32_BaseBoard | ForEach-Object {
-			$LocalInfo['Product'] = $_.Product.Trim()
+			$LocalInfo['Product'] = "$($_.Product)".Trim()
 		}
 
 		# UEFI
@@ -185,6 +183,7 @@ Function Get-PSDLocalInfo {
 			$LocalInfo['IsOnBattery'] = $true
 		}
 
+<#
 		#https://docs.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getproductinfo
 		$sku = (Get-CimInstance -ClassName win32_operatingsystem).OperatingSystemSKU
 		switch ($sku)
@@ -229,90 +228,124 @@ Function Get-PSDLocalInfo {
 			85		{$LocalInfo['OSSku']="Mobile Enterprise";break}
 			default {$LocalInfo['OSSku']="Not Supported";break}
 		}
+#>
 
-		# TODO: GetCurrentOSInfo
+		# Simple OS Sku Name
+		$OSName = (Get-CimInstance -ClassName win32_operatingsystem).Caption.Trim()
+		$OSName = $OSName.Replace("Microsoft ","")
+		$LocalInfo['OSName'] = $OSName
+		
+		# BitLocker
+  		$bIsBDE = $false
+		If ([Int]$LocalInfo['OSCurrentBuild'] -ge 6000) {
+			$BitLockerVolumes = Get-CimInstance -Namespace "Root\CIMv2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume" -ErrorAction SilentlyContinue
+			ForEach ($BitLockerVolume in $BitLockerVolumes) {
+				If ($BitLockerVolume.ConversionStatus -ne 0) {
+					If ([String]::IsNullOrEmpty($BitLockerVolume.DriveLetter)) { 
+						Write-PSDLog "Encrypted drive found: $($BitLockerVolume.DeviceID), status = $($BitLockerVolume.ConversionStatus)" 
+					}
+					Else { 
+						Write-PSDLog "Encrypted drive found: $($BitLockerVolume.DriveLetter), status = $($BitLockerVolume.ConversionStatus)" 
+					}
+					$bIsBDE = $true
+				}
+			}
+			If (-not $bIsBDE) { Write-PSDLog "There is no encrypted drives" }
+		}
+		$LocalInfo['IsBDE'] = $bIsBDE
 
-		# TODO: BitLocker
 
 		# Generate ModelAlias, MakeAlias and SystemAlias
 		$LocalInfo['IsVM'] = "False"
 		Switch -Wildcard ($LocalInfo['Make']) {
 			"*Microsoft*" {
 				$LocalInfo['MakeAlias'] = "Microsoft"
-				$LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim()
 				$LocalInfo['SystemAlias'] = Get-CimInstance -ClassName MS_SystemInformation -Namespace root\wmi | Select-Object -ExpandProperty SystemSKU
 				# Logic for Hyper-V Testing
 				If ($LocalInfo['ModelAlias'] -eq "Virtual Machine") {
-					$LocalInfo['SystemAlias'] = Get-CimInstance -ClassName MS_SystemInformation -Namespace root\wmi | Select-Object -ExpandProperty SystemVersion
+					if($Null -eq(Get-CimInstance -ClassName MS_SystemInformation -Namespace root\wmi | Select-Object -ExpandProperty SystemVersion)){
+						$LocalInfo['SystemAlias'] = "Hyper-V BIOS"
+					}else{
+						$LocalInfo['SystemAlias'] = (Get-CimInstance -ClassName MS_SystemInformation -Namespace root\wmi | Select-Object -ExpandProperty SystemVersion).Trim()
+					}
+					if ([string]::IsNullOrEmpty($LocalInfo['SystemAlias'])){
+						$LocalInfo['SystemAlias'] = $LocalInfo['ModelAlias']
+					}
 					$LocalInfo['IsVM'] = "True"
 				}
 			}
 			"*HP*" {
 				$LocalInfo['MakeAlias'] = "HP"
-				$LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
-				$LocalInfo['SystemAlias'] = (Get-CimInstance -ClassName MS_SystemInformation -NameSpace root\wmi).BaseBoardProduct.Trim()
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim()
+				$LocalInfo['SystemAlias'] = "$((Get-CimInstance -ClassName MS_SystemInformation -NameSpace root\wmi).BaseBoardProduct)".Trim()
 			}
 			"*VMWare*" {
 				$LocalInfo['MakeAlias'] = "VMWare"
                 # $LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim() # Default, sets alias to same as model
                 # $LocalInfo['ModelAlias'] = ((Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()).replace(",","_") # Remove the "," and replace with "_"
-                $LocalInfo['ModelAlias'] = ((Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()).replace(" ","_").replace(",","_") # Remove the "," and replace with "_", Remove the " " and replace with "_"
+                $LocalInfo['ModelAlias'] = ("$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim()).replace(" ","_").replace(",","_") # Remove the "," and replace with "_", Remove the " " and replace with "_"
 
 				$LocalInfo['SystemAlias'] = Get-CimInstance -ClassName MS_SystemInformation -Namespace root\wmi | Select-Object -ExpandProperty SystemSKU
 				$LocalInfo['IsVM'] = "True"
 			}
 			"*QEMU*" {
 				$LocalInfo['MakeAlias'] = "QEMU"
-				$LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim()
 				$LocalInfo['SystemAlias'] = Get-CimInstance -ClassName MS_SystemInformation -Namespace root\wmi | Select-Object -ExpandProperty SystemSKU
 				$LocalInfo['IsVM'] = "True"
 			}
 			"*Innotek*" {
 				$LocalInfo['MakeAlias'] = "Innotek"
-				$LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim()
 				$LocalInfo['SystemAlias'] = Get-CimInstance -ClassName MS_SystemInformation -Namespace root\wmi | Select-Object -ExpandProperty SystemSKU
 				$LocalInfo['IsVM'] = "True"
 			}
 			"*Hewlett-Packard*" {
 				$LocalInfo['MakeAlias'] = "HP"
-				$LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
-				$LocalInfo['SystemAlias'] = (Get-CimInstance -ClassName MS_SystemInformation -NameSpace root\wmi).BaseBoardProduct.Trim()
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim()
+				$LocalInfo['SystemAlias'] = "$((Get-CimInstance -ClassName MS_SystemInformation -NameSpace root\wmi).BaseBoardProduct)".Trim()
 			}
 			"*Dell*" {
 				$LocalInfo['MakeAlias'] = "Dell"
-				$LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
-				$LocalInfo['SystemAlias'] = (Get-CimInstance -ClassName MS_SystemInformation -NameSpace root\wmi ).SystemSku.Trim()
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim()
+				$LocalInfo['SystemAlias'] = "$((Get-CimInstance -ClassName MS_SystemInformation -NameSpace root\wmi ).SystemSku)".Trim()
 			}
 			"*Lenovo*" {
 				$LocalInfo['MakeAlias'] = "Lenovo"
-				$LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version).Trim()
-				$LocalInfo['SystemAlias'] = ((Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).SubString(0, 4)).Trim()
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version)".Trim()
+				$LocalInfo['SystemAlias'] = "$((Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).SubString(0, 4))".Trim()
 			}
 			"*Intel(R) Client Systems*" {
 				$LocalInfo['MakeAlias'] = "Intel(R) Client Systems"
-				$LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version).Trim()
-				$LocalInfo['SystemAlias'] = ((Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim())
-				$LocalInfo['SystemAlias'] = $LocalInfo['SystemAlias'].SubString(0, $LocalInfo['SystemAlias'].IndexOf("i")).Trim()
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty Version)".Trim()
+				$LocalInfo['SystemAlias'] = ("$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim())
+				$LocalInfo['SystemAlias'] = "$($LocalInfo['SystemAlias'].SubString(0, $LocalInfo['SystemAlias'].IndexOf("i")))".Trim()
 			}
 			"*Panasonic*" {
 				$LocalInfo['MakeAlias'] = "Panasonic Corporation"
-				$LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
-				$LocalInfo['SystemAlias'] = (Get-CimInstance -ClassName MS_SystemInformation -NameSpace root\wmi ).BaseBoardProduct.Trim()
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim()
+				$LocalInfo['SystemAlias'] = "$((Get-CimInstance -ClassName MS_SystemInformation -NameSpace root\wmi ).BaseBoardProduct)".Trim()
 			}
 			"*Viglen*" {
 				$LocalInfo['MakeAlias'] = "Viglen"
-				$LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
-				$LocalInfo['SystemAlias'] = (Get-CimInstance -ClassName Win32_BaseBoard | Select-Object -ExpandProperty SKU).Trim()
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim()
+				$LocalInfo['SystemAlias'] = "$(Get-CimInstance -ClassName Win32_BaseBoard | Select-Object -ExpandProperty SKU)".Trim()
 			}
 			"*AZW*" {
 				$LocalInfo['MakeAlias'] = "AZW"
-				$LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
-				$LocalInfo['SystemAlias'] = (Get-CimInstance -ClassName MS_SystemInformation -NameSpace root\wmi ).BaseBoardProduct.Trim()
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim()
+				$LocalInfo['SystemAlias'] = "$((Get-CimInstance -ClassName MS_SystemInformation -NameSpace root\wmi ).BaseBoardProduct)".Trim()
 			}
 			"*Fujitsu*" {
 				$LocalInfo['MakeAlias'] = "Fujitsu"
-				$LocalInfo['ModelAlias'] = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model).Trim()
-				$LocalInfo['SystemAlias'] = (Get-CimInstance -ClassName Win32_BaseBoard | Select-Object -ExpandProperty SKU).Trim()
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim()
+				$LocalInfo['SystemAlias'] = "$(Get-CimInstance -ClassName Win32_BaseBoard | Select-Object -ExpandProperty SKU)".Trim()
+			}
+			"*Acer*" {
+				$LocalInfo['MakeAlias'] = "Acer"
+				$LocalInfo['ModelAlias'] = "$(Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model)".Trim()
+				$LocalInfo['SystemAlias'] = $LocalInfo['ModelAlias']
 			}
 			Default {
 				$LocalInfo['MakeAlias'] = "NA"
@@ -449,6 +482,63 @@ Function Invoke-PSDRule {
 	}
 }
 
+Function Resolve-PSDSubsectionName {
+	[CmdletBinding()]
+	Param(
+		[Parameter(Mandatory = $True)]
+		[string]$Name
+	)
+
+	# Resolve MDT-style tokens before dispatching dynamic sections such as Laptop-%IsLaptop%.
+	$resolvedName = $Name
+	for ($iteration = 0; $iteration -lt 10 -and $resolvedName -match '%([^%]+)%'; $iteration++) {
+		$propertyName = $Matches[1]
+		$propertyValue = (Get-Item -Path "tsenv:$propertyName" -ErrorAction SilentlyContinue).Value
+
+		if ($null -eq $propertyValue -or [string]::IsNullOrEmpty([string]$propertyValue)) {
+			Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Unable to resolve subsection property $propertyName in $Name" -LogLevel 2
+			break
+		}
+
+		$resolvedName = $resolvedName.Replace("%$propertyName%", [string]$propertyValue)
+	}
+
+	return $resolvedName
+}
+
+Function Resolve-PSDSettingValue {
+	<#
+	.SYNOPSIS
+		Expands MDT-style property tokens in a rule value.
+	.DESCRIPTION
+		Resolves values such as %AssetTag% from the task sequence environment
+		before PSDGather writes the value to a task sequence variable.
+	.PARAMETER Value
+		Rule value to expand.
+	.OUTPUTS
+		The expanded value, retaining unresolved tokens for later processing.
+	#>
+	[CmdletBinding()]
+	Param(
+		[Parameter(Mandatory = $True)]
+		[string]$Value
+	)
+
+	$resolvedValue = $Value
+	for ($iteration = 0; $iteration -lt 10 -and $resolvedValue -match '%([^%]+)%'; $iteration++) {
+		$propertyName = $Matches[1]
+		$propertyValue = (Get-Item -Path "tsenv:$propertyName" -ErrorAction SilentlyContinue).Value
+
+		if ($null -eq $propertyValue -or [string]::IsNullOrEmpty([string]$propertyValue)) {
+			break
+		}
+
+		$resolvedValue = $resolvedValue.Replace("%$propertyName%", [string]$propertyValue)
+	}
+
+	return $resolvedValue
+}
+
 Function Get-PSDSettings {
 	[CmdletBinding()]
 	Param(
@@ -482,25 +572,28 @@ Function Get-PSDSettings {
 		}
 
 		if ($section.Contains("Subsection")) {
-			Invoke-PSDRule $section["Subsection"]
+			$subsectionName = Resolve-PSDSubsectionName -Name $section["Subsection"]
+			Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing subsection $subsectionName"
+			Invoke-PSDRule $subsectionName
 		}
 
 		# Process properties
 		if (-not $skipProperties) {
 			$section.Keys | ForEach-Object {
 				$sectionVar = $_
+				$sectionValue = Resolve-PSDSettingValue -Value $section[$sectionVar]
 				$v = $global:variables | Where-Object { $_.id -ieq $sectionVar }
 				if ($v) {
-					if ((Get-Item tsenv:$v).Value -eq $section[$sectionVar]) {
+					if ((Get-Item tsenv:$($v.id)).Value -eq $sectionValue) {
 						# Do nothing, value unchanged
 					}
-					if ((Get-Item tsenv:$v).Value -eq "" -or $v.overwrite -eq "true") {
+					if ((Get-Item tsenv:$($v.id)).Value -eq "" -or $v.overwrite -eq "true") {
 						$Value = $((Get-Item tsenv:$($v.id)).Value)
 						if ($value -eq '') { $value = "Empty" }
-						Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Changing property $($v.id) to $($section[$sectionVar]), was $Value"
-						Set-Item tsenv:$($v.id) -Value $section[$sectionVar]
+						Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Changing property $($v.id) to $sectionValue, was $Value"
+						Set-Item tsenv:$($v.id) -Value $sectionValue
 					}
-					elseif ((Get-Item tsenv:$v).Value -ne "") {
+					elseif ((Get-Item tsenv:$($v.id)).Value -ne "") {
 						Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Ignoring new value for $($v.id)"
 					}
 				}
@@ -509,9 +602,9 @@ Function Get-PSDSettings {
 					$v = $global:variables | Where-Object { $_.id -ieq $trimVar }
 					if ($v) {
 						if ($v.type -eq "list") {
-							Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding $($section[$sectionVar]) to $($v.id)"
+							Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding $sectionValue to $($v.id)"
 							$n = @((Get-Item tsenvlist:$($v.id)).Value)
-							$n += [String] $section[$sectionVar]
+							$n += [String] $sectionValue
 							Set-Item tsenvlist:$($v.id) -Value $n
 						}
 					}
