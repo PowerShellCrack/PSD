@@ -30,33 +30,11 @@
 .Example
 #>
 
-# Check for debug in PowerShell and TSEnv
-if ($TSEnv:PSDDebug -eq "YES") {
-	$Global:PSDDebug = $true
-}
-if ($PSDDebug -eq $true) {
-	$verbosePreference = "Continue"
-}
+# Import common PSD module
+Import-Module "$PSScriptRoot\PSDCommon.psm1" -Force -Verbose:$False
 
-Function Test-PSDTSENV{
-	<#
-		.SYNOPSIS
-			Test environmetn to see if Microsoft.SMS.TSEnvironment COM Object exists
-
-	#>
-	try{
-		Get-ChildItem -Path tsenv: -ErrorAction Stop | Out-Null
-		# Create an object to access the task sequence environment
-		#$tsenv = New-Object -ComObject Microsoft.SMS.TSEnvironment
-		#grab the progress UI
-		#$TSProgressUi = New-Object -ComObject Microsoft.SMS.TSProgressUI
-		return $true
-	}
-	catch{
-		#set variable to null
-		return $false
-	}
-}
+# Initialize debug mode
+Initialize-PSDDebugMode
 
 Function Get-PSDLocalInfo {
 	[CmdletBinding()]
@@ -345,7 +323,7 @@ Function Get-PSDLocalInfo {
 		}
 	}
 	End{
-		If(Test-PSDTSENV)
+		If(Test-PSDTSEnvironment)
 		{
 			# Dump all items in hastable as TS VARs
 			Foreach($i in $LocalInfo.GetEnumerator())
