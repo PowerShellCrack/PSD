@@ -35,16 +35,22 @@
 # Import main module Microsoft.BDD.TaskSequenceModule
 Import-Module Microsoft.BDD.TaskSequenceModule -Scope Global -Force -ErrorAction Stop -Verbose:$False
 
-# Import common PSD module
-Import-Module "$PSScriptRoot\PSDCommon.psm1" -Force -Verbose:$False
-
-# Initialize debug mode
-Initialize-PSDDebugMode
+# Check for debug in PowerShell and TSEnv
+if ($TSEnv:PSDDebug -eq "YES") {
+    $Global:PSDDebug = $true
+}
+if ($PSDDebug -eq $true) {
+    $verbosePreference = "Continue"
+}
 
 $global:psuDataPath = ""
-
-# Get caller script
-$caller = Get-PSDCallerScript
+#attempt to get the powershell caller script
+#if no caller; just output PSD.ps1 as script file (does n)
+try{
+    $caller = Split-Path -Path $MyInvocation.PSCommandPath -Leaf -ErrorAction Stop
+}Catch{
+    $caller = 'PSD'
+}
 
 function Get-PSDLocalDataPath {
     param (
@@ -512,8 +518,7 @@ function Copy-PSDFolder {
     $s = $source.TrimEnd("\")
     $d = $destination.TrimEnd("\")
     # Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Copying folder $source to $destination using XCopy"
-    #FIX https://github.com/FriendsOfMDT/PSD/issues/205
-    $null = Start-Process xcopy -ArgumentList """$s"" ""$d"" /s /e /v /d /y /i" -NoNewWindow -Wait -Passthru -RedirectStandardOutput xcopy
+    $null = Start-Process xcopy -ArgumentList "$s $d /s /e /v /d /y /i" -NoNewWindow -Wait -Passthru -RedirectStandardOutput xcopy
 }
 
 function Test-PSDNetCon {
@@ -960,9 +965,21 @@ Function Show-PSDInfo {
 
 "@
     #=======================================================
-    # LOAD ASSEMBLIES AND CREATE WINDOW
+    # LOAD ASSEMBLIES
     #=======================================================
-    $script:PSDInfo = New-PSDWPFWindow -XamlContent $xaml
+    [System.Reflection.Assembly]::LoadWithPartialName('PresentationFramework')      | out-null #required for WPF
+    [System.Reflection.Assembly]::LoadWithPartialName('PresentationCore')           | out-null #required for WPF
+
+    [xml]$xaml = $xaml -replace 'mc:Ignorable="d"','' -replace "x:N",'N' -replace '^<Win.*', '<Window'
+    $reader=(New-Object System.Xml.XmlNodeReader $xaml)
+
+    $script:PSDInfo = @{}
+    $PSDInfo.Window=[Windows.Markup.XamlReader]::Load( $reader )
+    #===========================================================================
+    # Store Form Objects In PowerShell
+    #===========================================================================
+    # Add window and it's named elements to a hash table
+    $xaml.SelectNodes("//*[@Name]") | ForEach-Object -Process {$PSDInfo.$($_.Name) = $PSDInfo.Window.FindName($_.Name)}
 
     switch ($Severity) {
         'Error' {
