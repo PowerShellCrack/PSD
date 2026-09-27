@@ -888,6 +888,16 @@ else{
         Exit 0
     }
 
+        $taskSequenceId = [string]$tsenv:TaskSequenceID
+        if ([string]::IsNullOrWhiteSpace($taskSequenceId)) {
+            throw "TaskSequenceID is empty. Set it in CustomSettings.ini or select a task sequence in the wizard."
+        }
+
+        $taskSequenceXmlPath = Join-Path $control "$taskSequenceId\ts.xml"
+        if (-not (Test-Path -LiteralPath $taskSequenceXmlPath -PathType Leaf)) {
+            throw "TaskSequenceID '$taskSequenceId' does not resolve to a task sequence definition at '$taskSequenceXmlPath'. Check the exact task sequence ID in Control\TaskSequences.xml."
+        }
+
         # Wizard should be done here, moving on to running the Task Sequence
     # Find the task sequence engine
     if (Test-Path -Path "X:\Deploy\Tools\$($tsenv:Architecture)\tsmbootstrap.exe"){

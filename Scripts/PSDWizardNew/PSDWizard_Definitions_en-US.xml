@@ -22,7 +22,7 @@
 	</WelcomeWizard>
 
 	<Pane id="Readiness" title="Deployment Readiness">
-		<Condition><![CDATA[UCASE(Property("SkipDeployReadiness")) <> "YES" and UCASE(Property("SkipReadinessCheck")) <> "YES" ]]></Condition>
+		<Condition><![CDATA[UCASE(Property("SkipDeployReadiness")) <> "YES" ]]></Condition>
 		<Validation><![CDATA[ Property("Model") in Properties("SupportedModels(*)")]]></Validation>
 		<Validation><![CDATA[ Property(IsEUFI) == "True"]]></Validation>
 		<MainTitle><![CDATA[ "Deployment Readiness" ]]></MainTitle>

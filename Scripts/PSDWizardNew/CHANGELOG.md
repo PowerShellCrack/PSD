@@ -1,11 +1,20 @@
 # Change log for PSDWizardNew
 
+## 3.0.0 - Sept 27, 2026
+
+- PSDWizardNew is now a runspace; making it more responsive
+- Filter selectable applications using `WizardSelectionProfile` and build custom wizard option lists from processed numbered task-sequence variables.
+- Complete without opening a blank wizard when processed TSEnv settings skip every pane.
+- Validate `TaskSequenceID` and its `ts.xml` before starting the task-sequence engine.
+- Detect an active task sequence from the `TSEnv:` PSDrive when the SMS TSEnvironment COM object is unavailable.
+- Use PSD's `TSEnv:` PSDrive for all production TSEnv reads, writes, and clears without COM fallback.
+- Require explicit `-DevelopmentMode` for local simulation; fail clearly if a normal wizard launch has no PSD `TSEnv:` drive.
+- Bind Classic and Dark `TSEnv_*` XAML controls from a synchronized, case-insensitive snapshot of PSD's processed `TSEnv:` values, and run readiness scripts only when their page is present.
+
 # 2.3.6 - Dec 29, 2024
 
 - Fixed issue with trimming off serial (https://github.com/FriendsOfMDT/PSD/issues/196)
 - Added native MACADDRESS and ASSETTAG support in computername (https://github.com/FriendsOfMDT/PSD/issues/167)
-
-
 
 ## 2.3.3 - May 1, 2024
 
@@ -29,7 +38,7 @@
 ## 2.3.0 - April 6, 2024
 
 - (PC) Added custom pane control by external scripts. Allows dynamic pages
-- (PC) Cleaned up theme fonts and readiness fonts. 
+- (PC) Cleaned up theme fonts and readiness fonts.
 - (PC) Renamed PSDWizard.Initialize.ps1 to PSDWizard.Helper.ps1
 - (PC) Add PSDWizardCollapseTSList to collapse large TS list (https://github.com/FriendsOfMDT/PSD/issues/127)
 - (PC) Fixed change log version check n PSDWizard

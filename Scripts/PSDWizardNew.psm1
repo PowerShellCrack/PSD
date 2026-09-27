@@ -14,13 +14,13 @@
     Contact: Dick Tracy (@PowershellCrack)
     Primary: Dick Tracy (@PowershellCrack)
     Created: 2020-01-12
-    Modified: 2026-02-14
+    Modified: 2026-09-27
     Version: 3.0.0
 
     VERSION 3.0.0 CHANGES:
         Complete rewrite from scratch with optimized logic
         Runspace-based UI architecture for responsiveness
-        FIXED: Application selection (apps in CS.ini always installed) 
+        FIXED: Application selection (apps in CS.ini always installed)
         FIXED: Domain admin validation (rejected valid username formats)
         FIXED: TaskSequence skip logic (SkipTaskSequence=YES caused restart)
         FIXED: Dummy application requirement (returns empty array, not null)
@@ -41,8 +41,6 @@
         - Data Layer: TSEnv interaction functions
 
     TODO:
-        - Support application profiles
-        - Support profile selections  
         - Support Autopilot Tasksequence
         - Support additional languages
         - Additional themes (Windows 11 OOBE, Circular buttons)
@@ -85,40 +83,34 @@ Function Test-PSDWizardEnvironment {
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
     Param()
-    
+
     $envInfo = [PSCustomObject]@{
         IsWinPE = $false
         IsDevelopment = $false
         TSEnvAvailable = $false
     }
-    
+
     try {
         # Check for WinPE registry key
         $winPEKey = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT' -ErrorAction SilentlyContinue
         if ($winPEKey) {
             $envInfo.IsWinPE = $true
         }
-        
-        # Check for TSEnv object
-        try {
-            $tsenv = New-Object -COMObject Microsoft.SMS.TSEnvironment -ErrorAction Stop
+
+        # PSD creates TSEnv: for the wizard; use it as the production contract.
+        $tsenvDrive = Get-PSDrive -Name 'TSEnv' -ErrorAction SilentlyContinue
+        if ($tsenvDrive) {
             $envInfo.TSEnvAvailable = $true
-            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($tsenv) | Out-Null
         }
-        catch {
-            $envInfo.TSEnvAvailable = $false
-        }
-        
-        # Determine if development mode
-        if (-not $envInfo.IsWinPE -and -not $envInfo.TSEnvAvailable) {
-            $envInfo.IsDevelopment = $true
-            $script:IsDevelopmentMode = $true
-        }
+
+        # Development simulation is opt-in; a missing PSD TSEnv drive is a deployment error.
+        $envInfo.IsDevelopment = $false
+        $script:IsDevelopmentMode = $false
     }
     catch {
         Write-PSDLog -Message "Error detecting environment: $($_.Exception.Message)" -LogLevel 2
     }
-    
+
     return $envInfo
 }
 
@@ -141,24 +133,25 @@ Function Write-PSDWizardLog {
     Param(
         [Parameter(Mandatory=$true)]
         [string]$Message,
-        
+
         [Parameter(Mandatory=$false)]
         [ValidateRange(1,3)]
         [int]$LogLevel = 1,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$Component = $null
     )
-    
+
+    # Determine the component name if not provided
     if ([string]::IsNullOrWhiteSpace($Component)) {
         $Component = (Get-PSCallStack)[1].Command
     }
-    
+
     # Log to PSDLog if available
     if (Get-Command Write-PSDLog -ErrorAction SilentlyContinue) {
         Write-PSDLog -Message ("{0}: {1}" -f $Component, $Message) -LogLevel $LogLevel
     }
-    
+
     # Also output to console in development mode
     if ($script:IsDevelopmentMode) {
         $prefix = switch ($LogLevel) {
@@ -195,17 +188,17 @@ Function Initialize-PSDWizardState {
         [Parameter(Mandatory=$false)]
         [switch]$DevelopmentMode
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Initializing wizard state..." -Component $FunctionName
-    
+
     # Create synchronized hashtable for cross-thread access
     $syncHash = [hashtable]::Synchronized(@{
         # Environment
         IsDevelopmentMode = $DevelopmentMode.IsPresent
         IsWinPE = $false
         TSEnvAvailable = $false
-        
+
         # UI State
         Window = $null
         XAMLContent = $null
@@ -214,38 +207,38 @@ Function Initialize-PSDWizardState {
         IsLoaded = $false
         IsClosing = $false
         IsClosed = $false
-        
+
         # Wizard Data
         SelectedApplications = @()
         SelectedTaskSequence = $null
         ValidationErrors = @()
         UserSelections = @{}
-        
+
         # Runspace Management
         Runspace = $null
         PowerShell = $null
         AsyncHandle = $null
-        
+
         # Configuration
         ResourcePath = $null
         Language = 'en-US'
         Theme = 'Classic'
         Version = $script:ModuleVersion
-        
+
         # Progress Tracking
         ProgressStatus = 'Initializing'
         ProgressPercent = 0
         ProgressIndeterminate = $true
-        
+
         # Error State
         Error = $null
         hadCritError = $false
-        
+
         # Timestamps
         InitializeTime = Get-Date
         LastUpdate = Get-Date
     })
-    
+
     Write-PSDWizardLog -Message "Wizard state initialized successfully" -Component $FunctionName
     return $syncHash
 }
@@ -269,20 +262,24 @@ Function Get-PSDWizardState {
     Param(
         [Parameter(Mandatory=$true)]
         [string]$Key,
-        
+
         [Parameter(Mandatory=$false)]
         $Default = $null
     )
-    
+
+    # Determine the component name for logging if not provided
+    $FunctionName = $MyInvocation.MyCommand.Name
+
     if ($null -eq $script:PSDWizardSyncHash) {
-        Write-PSDWizardLog -Message "State not initialized" -LogLevel 2
+        Write-PSDWizardLog -Message "State not initialized" -LogLevel 2 -Component $FunctionName
         return $Default
     }
-    
+
+    # Return the value if the key exists in the state hashtable
     if ($script:PSDWizardSyncHash.ContainsKey($Key)) {
         return $script:PSDWizardSyncHash[$Key]
     }
-    
+
     return $Default
 }
 
@@ -303,20 +300,23 @@ Function Set-PSDWizardState {
     Param(
         [Parameter(Mandatory=$true)]
         [string]$Key,
-        
+
         [Parameter(Mandatory=$true)]
         $Value
     )
+
+    # Determine the component name for logging if not provided
+    $FunctionName = $MyInvocation.MyCommand.Name
     
     if ($null -eq $script:PSDWizardSyncHash) {
-        Write-PSDWizardLog -Message "State not initialized, cannot set key: $Key" -LogLevel 3
+        Write-PSDWizardLog -Message "State not initialized, cannot set key: $Key" -LogLevel 3 -Component $FunctionName
         return
     }
-    
+
     $script:PSDWizardSyncHash[$Key] = $Value
     $script:PSDWizardSyncHash['LastUpdate'] = Get-Date
-    
-    Write-PSDWizardLog -Message "State updated: $Key" -Component $MyInvocation.MyCommand.Name
+
+    Write-PSDWizardLog -Message "State updated: $Key" -Component $FunctionName
 }
 
 #endregion
@@ -344,33 +344,33 @@ Function Start-PSDWizardRunspace {
     Param(
         [Parameter(Mandatory=$true)]
         [hashtable]$SyncHash,
-        
+
         [Parameter(Mandatory=$true)]
         [scriptblock]$ScriptBlock
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Creating UI runspace..." -Component $FunctionName
-    
+
     try {
         # Create runspace
         $Runspace = [runspacefactory]::CreateRunspace()
         $Runspace.ApartmentState = "STA"
         $Runspace.ThreadOptions = "ReuseThread"
         $Runspace.Open()
-        
+
         # Pass syncHash to runspace
         $Runspace.SessionStateProxy.SetVariable("syncHash", $SyncHash)
         $SyncHash.Runspace = $Runspace
-        
+
         # Create PowerShell instance
         $PowerShell = [PowerShell]::Create()
         $PowerShell.Runspace = $Runspace
         $PowerShell.AddScript($ScriptBlock) | Out-Null
-        
+
         # Start async execution
         $AsyncHandle = $PowerShell.BeginInvoke()
-        
+
         # Register cleanup event
         Register-ObjectEvent -InputObject $Runspace -EventName 'AvailabilityChanged' -Action {
             if ($Sender.RunspaceAvailability -eq "Available") {
@@ -379,9 +379,9 @@ Function Start-PSDWizardRunspace {
                 [GC]::Collect()
             }
         } | Out-Null
-        
+
         Write-PSDWizardLog -Message "UI runspace started successfully" -Component $FunctionName
-        
+
         return [PSCustomObject]@{
             Runspace = $Runspace
             PowerShell = $PowerShell
@@ -410,31 +410,32 @@ Function Stop-PSDWizardRunspace {
         [Parameter(Mandatory=$false)]
         [PSCustomObject]$RunspaceInfo
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Stopping UI runspace..." -Component $FunctionName
-    
+
+    # Attempt to stop and clean up the UI runspace
     try {
         if ($null -ne $RunspaceInfo) {
             if ($null -ne $RunspaceInfo.PowerShell) {
                 $RunspaceInfo.PowerShell.Stop()
                 $RunspaceInfo.PowerShell.Dispose()
             }
-            
+
             if ($null -ne $RunspaceInfo.Runspace) {
                 $RunspaceInfo.Runspace.Close()
                 $RunspaceInfo.Runspace.Dispose()
             }
         }
-        
+
         # Clean up script-level variables
         $script:PSDWizardRunspace = $null
         $script:PSDWizardUI = $null
-        
+
         # Force garbage collection
         [GC]::Collect()
         [GC]::WaitForPendingFinalizers()
-        
+
         Write-PSDWizardLog -Message "UI runspace stopped successfully" -Component $FunctionName
     }
     catch {
@@ -466,31 +467,32 @@ Function Get-PSDWizardDefinitions {
     Param(
         [Parameter(Mandatory=$true)]
         [xml]$Xml,
-        
+
         [Parameter(Mandatory=$false)]
         [ValidateSet('Global', 'WelcomeWizard', 'Pane')]
         [string]$Section = 'Global'
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
-    
+
+    # Attempt to retrieve the requested section from the XML
     try {
         if ($null -eq $Xml.Wizard) {
             Write-PSDWizardLog -Message "Invalid XML structure: Wizard node not found" -LogLevel 3 -Component $FunctionName
             return $null
         }
-        
+        # Ensure the requested section exists within the XML structure
         $result = switch ($Section) {
             'Global' { $Xml.Wizard.Global }
             'WelcomeWizard' { $Xml.Wizard.WelcomeWizard }
             'Pane' { $Xml.Wizard.Pane }
             default { $null }
         }
-        
+
         if ($null -eq $result) {
             Write-PSDWizardLog -Message "Section '$Section' not found in XML" -LogLevel 2 -Component $FunctionName
         }
-        
+
         return $result
     }
     catch {
@@ -518,20 +520,22 @@ Function Get-PSDWizardThemeDefinition {
     Param(
         [Parameter(Mandatory=$true)]
         [xml]$Xml,
-        
+
         [Parameter(Mandatory=$false)]
         [ValidateSet('ThemeTemplate', 'PanesTemplate', 'WelcomeWizard', 'Pane', 'PaneStartingMargin')]
         [string]$Section
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
-    
+
+    # Attempt to retrieve the requested section from the theme XML
     try {
         if ($null -eq $Xml.Theme) {
             Write-PSDWizardLog -Message "Invalid theme XML structure" -LogLevel 3 -Component $FunctionName
             return $null
         }
-        
+
+        # Initialize the result variable to null before attempting to retrieve the section
         $result = switch ($Section) {
             'ThemeTemplate' { $Xml.Theme.Global.TemplateReference }
             'WelcomeWizard' { $Xml.Theme.Global.WelcomeWizardReference }
@@ -540,7 +544,7 @@ Function Get-PSDWizardThemeDefinition {
             'Pane' { $Xml.Theme.PaneDefinitions.Pane }
             default { $Xml.Theme }
         }
-        
+
         return $result
     }
     catch {
@@ -570,16 +574,16 @@ Function Get-PSDWizardCondition {
     Param(
         [Parameter(Mandatory=$true)]
         [string]$Condition,
-        
+
         [Parameter(Mandatory=$false)]
         $TSEnvSettings,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Passthru
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
-    
+
     try {
         # Convert TSEnv properties to variables
         if ($TSEnvSettings) {
@@ -587,16 +591,16 @@ Function Get-PSDWizardCondition {
             if ($TSEnvSettings -is [hashtable]) {
                 foreach ($key in $TSEnvSettings.Keys) {
                     # Skip empty/null keys and underscore variables
-                    if ([string]::IsNullOrWhiteSpace($key) -or $key -match "^_") { 
-                        continue 
+                    if ([string]::IsNullOrWhiteSpace($key) -or $key -match "^_") {
+                        continue
                     }
-                    
+
                     $varValue = $TSEnvSettings[$key]
-                    
+
                     # Preserve string values as-is for string comparisons
                     # Don't convert "YES"/"NO" to boolean - this breaks conditions like:
                     # UCase(Property("SkipIntuneGroup")) == "NO"
-                    
+
                     New-Variable -Name $key -Value $varValue -Scope Local -Force -ErrorAction SilentlyContinue
                 }
             }
@@ -606,20 +610,20 @@ Function Get-PSDWizardCondition {
                     if ($null -eq $item -or [string]::IsNullOrWhiteSpace($item.Name)) {
                         continue
                     }
-                    
+
                     $varName = $item.Name
                     if ($varName -match "^_") { continue }
-                    
+
                     $varValue = $item.Value
-                    
+
                     # Preserve string values as-is for string comparisons
                     # Don't convert "YES"/"NO" to boolean - this breaks conditions
-                    
+
                     New-Variable -Name $varName -Value $varValue -Scope Local -Force -ErrorAction SilentlyContinue
                 }
             }
         }
-        
+
         # Convert operators: <> to -ne, == to -eq, etc.
         $psCondition = $Condition -replace '<>', ' -ne ' `
                                   -replace '==', ' -eq ' `
@@ -628,19 +632,19 @@ Function Get-PSDWizardCondition {
                                   -replace '>=', ' -ge ' `
                                   -replace '<', ' -lt ' `
                                   -replace '>', ' -gt '
-        
+
         # Convert UCase() function calls - handle null values properly
         # UCase(Property("x")) becomes ([string]$x).ToUpper() to handle nulls
         # In regex replacement: $$ = literal $, $1 = backreference, so $$$ $1 = $SkipXxx
         $psCondition = [regex]::Replace($psCondition, 'UCase\s*\(\s*Property\s*\(\s*"([^"]+)"\s*\)\s*\)', '([string]$$$1).ToUpper()', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-        
+
         # Remove any remaining standalone UCASE/UCase calls
         $psCondition = [regex]::Replace($psCondition, 'UCase\s*\(([^)]+)\)', '([string]$1).ToUpper()', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-        
+
         # Convert Property("name") or Property(name) to $name (already handled ToUpper above)
         $psCondition = [regex]::Replace($psCondition, 'Property\s*\(\s*"([^"]+)"\)', '$$$1')
         $psCondition = [regex]::Replace($psCondition, 'Property\s*\(([^)]+)\)', '$$$1')
-        
+
         # Handle Properties() for arrays/wildcards
         if ($psCondition -match 'Properties') {
             $propertiesMatches = [regex]::Matches($psCondition, 'Properties\("([^"]+)"\)')
@@ -650,26 +654,26 @@ Function Get-PSDWizardCondition {
             }
             $psCondition = $psCondition -replace '\bin\b', ' -in '
         }
-        
+
         # Handle logical operators
         if ($psCondition -match '\s+or\s+|\s+and\s+') {
             $psCondition = '(' + ($psCondition -replace '\bor\b', ') -or (' -replace '\band\b', ') -and (') + ')'
         }
-        
+
         # Convert boolean strings
         $psCondition = $psCondition -replace '"True"', '$True' -replace '"False"', '$False'
-        
+
         # Clean up whitespace
         $psCondition = ($psCondition -replace '\s+', ' ').Trim()
-        
+
         # Debug output in development mode
         if ($script:IsDevelopmentMode) {
             Write-PSDWizardLog -Message "Condition transformed: '$Condition' => '$psCondition'" -Component $FunctionName
         }
-        
+
         # Create scriptblock
         $scriptblock = [scriptblock]::Create($psCondition)
-        
+
         if ($Passthru) {
             return $scriptblock
         }
@@ -713,34 +717,35 @@ Function Get-PSDWizardTSEnvProperty {
     Param(
         [Parameter(Mandatory=$true)]
         [string]$Name,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$WildCard,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$ValueOnly,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$NoExpand
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     $results = @()  # FIXED: Initialize as empty array, not null
-    
+
     try {
         # Check if TSEnv is available
         if ($script:IsDevelopmentMode) {
             Write-PSDWizardLog -Message "Development mode: Getting property '$Name' from TSEnvSettings" -Component $FunctionName
-            
+
             # Try to get from PSDWizardSyncHash.TSEnvSettings
             if ($script:PSDWizardSyncHash -and $script:PSDWizardSyncHash.TSEnvSettings) {
                 if ($WildCard) {
                     # Get all variables matching pattern
                     $matchingKeys = $script:PSDWizardSyncHash.TSEnvSettings.Keys | Where-Object { $_ -like $Name }
-                    
+
+                    # Iterate over each matching key and retrieve its value
                     foreach ($key in $matchingKeys) {
                         $value = $script:PSDWizardSyncHash.TSEnvSettings[$key]
-                        
+
                         if ($ValueOnly) {
                             $results += $value
                         }
@@ -756,7 +761,7 @@ Function Get-PSDWizardTSEnvProperty {
                     # Get specific variable
                     if ($script:PSDWizardSyncHash.TSEnvSettings.ContainsKey($Name)) {
                         $value = $script:PSDWizardSyncHash.TSEnvSettings[$Name]
-                        
+
                         if ($ValueOnly) {
                             $results = $value
                         }
@@ -772,70 +777,59 @@ Function Get-PSDWizardTSEnvProperty {
                     }
                 }
             }
-            
+
             return $results
         }
-        
-        $tsenv = New-Object -COMObject Microsoft.SMS.TSEnvironment -ErrorAction Stop
-        
+
+        if (-not (Get-PSDrive -Name 'TSEnv' -ErrorAction SilentlyContinue)) {
+            throw "PSD TSEnv: drive is unavailable while reading '$Name'. Ensure PSD initialized the task-sequence environment before launching the wizard."
+        }
+
+        Write-PSDWizardLog -Message "Getting property '$Name' from TSEnv: drive" -Component $FunctionName
+        # Check if the property name contains wildcard characters
         if ($WildCard) {
-            # Get all variables matching pattern
-            $allVars = $tsenv.GetVariables()
-            $matchingVars = $allVars | Where-Object { $_ -like $Name }
-            
-            foreach ($varName in $matchingVars) {
-                $value = $tsenv.Value($varName)
-                
-                if (-not $NoExpand) {
-                    $value = $tsenv.Value($varName)  # Expanded by default
-                }
-                
+            foreach ($item in (Get-ChildItem -Path 'TSEnv:' | Where-Object { $_.Name -like $Name })) {
                 if ($ValueOnly) {
-                    $results += $value
+                    $results += $item.Value
                 }
                 else {
                     $results += [PSCustomObject]@{
-                        Name = $varName
-                        Value = $value
+                        Name = $item.Name
+                        Value = $item.Value
                     }
                 }
             }
         }
         else {
-            # Get specific variable
-            try {
-                $value = $tsenv.Value($Name)
-                
+            # Attempt to retrieve the specific property from the TSEnv: drive
+            $item = Get-Item -Path "TSEnv:\$Name" -ErrorAction SilentlyContinue
+            if ($null -ne $item) {
                 if ($ValueOnly) {
-                    $results = $value
+                    $results = $item.Value
                 }
                 else {
                     $results = [PSCustomObject]@{
                         Name = $Name
-                        Value = $value
+                        Value = $item.Value
                     }
                 }
             }
-            catch {
-                Write-PSDWizardLog -Message "Property '$Name' not found in TSEnv" -LogLevel 2 -Component $FunctionName
-                # Return empty array instead of null - CRITICAL FIX
-                $results = @()
+            else {
+                Write-PSDWizardLog -Message "Property '$Name' not found in TSEnv: drive" -LogLevel 2 -Component $FunctionName
             }
         }
-        
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($tsenv) | Out-Null
     }
     catch {
         Write-PSDWizardLog -Message "Error accessing TSEnv: $($_.Exception.Message)" -LogLevel 3 -Component $FunctionName
         # Return empty array on error - CRITICAL FIX
         $results = @()
     }
-    
+
     # CRITICAL FIX: Ensure we always return an array, never null
     if ($null -eq $results) {
         $results = @()
     }
-    
+
     return $results
 }
 
@@ -858,38 +852,40 @@ Function Set-PSDWizardTSEnvProperty {
     Param(
         [Parameter(Mandatory=$true)]
         [string]$Name,
-        
+
         [Parameter(Mandatory=$true)]
         [AllowEmptyString()]
         [string]$Value,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Passthru
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
-    
+
     try {
         if ($script:IsDevelopmentMode) {
             Write-PSDWizardLog -Message "Development mode: Setting $Name = $Value in TSEnvSettings" -Component $FunctionName
-            
+
             # Update PSDWizardSyncHash.TSEnvSettings
             if ($script:PSDWizardSyncHash -and $script:PSDWizardSyncHash.TSEnvSettings) {
                 $script:PSDWizardSyncHash.TSEnvSettings[$Name] = $Value
             }
-            
+
             if ($Passthru) {
                 return [PSCustomObject]@{ Name = $Name; Value = $Value }
             }
             return
         }
-        
-        $tsenv = New-Object -COMObject Microsoft.SMS.TSEnvironment -ErrorAction Stop
-        $tsenv.Value($Name) = $Value
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($tsenv) | Out-Null
-        
+
+        # Ensure the TSEnv: drive is available before attempting to set the property
+        if (-not (Get-PSDrive -Name 'TSEnv' -ErrorAction SilentlyContinue)) {
+            throw "PSD TSEnv: drive is unavailable while setting '$Name'. Ensure PSD initialized the task-sequence environment before launching the wizard."
+        }
+        Set-Item -LiteralPath "TSEnv:\$Name" -Value $Value -Force -ErrorAction Stop | Out-Null
+
         Write-PSDWizardLog -Message "Property '$Name' set to '$Value'" -Component $FunctionName
-        
+
         if ($Passthru) {
             return [PSCustomObject]@{ Name = $Name; Value = $Value }
         }
@@ -917,17 +913,17 @@ Function Remove-PSDWizardTSEnvProperty {
     Param(
         [Parameter(Mandatory=$true)]
         [string]$Name,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$WildCard
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
-    
+
     try {
         if ($script:IsDevelopmentMode) {
             Write-PSDWizardLog -Message "Development mode: Removing TSEnv property '$Name' from TSEnvSettings (WildCard=$WildCard)" -Component $FunctionName
-            
+
             # Remove from PSDWizardSyncHash.TSEnvSettings
             if ($script:PSDWizardSyncHash -and $script:PSDWizardSyncHash.TSEnvSettings) {
                 if ($WildCard) {
@@ -944,27 +940,24 @@ Function Remove-PSDWizardTSEnvProperty {
                     }
                 }
             }
-            
+
             return
         }
-        
-        $tsenv = New-Object -COMObject Microsoft.SMS.TSEnvironment -ErrorAction Stop
-        
+
+        if (-not (Get-PSDrive -Name 'TSEnv' -ErrorAction SilentlyContinue)) {
+            throw "PSD TSEnv: drive is unavailable while clearing '$Name'. Ensure PSD initialized the task-sequence environment before launching the wizard."
+        }
         if ($WildCard) {
-            $allVars = $tsenv.GetVariables()
-            $matchingVars = $allVars | Where-Object { $_ -like $Name }
-            
-            foreach ($varName in $matchingVars) {
-                $tsenv.Value($varName) = ""
-                Write-PSDWizardLog -Message "Removed property: $varName" -Component $FunctionName
+            $matchingItems = @(Get-ChildItem -Path 'TSEnv:' | Where-Object { $_.Name -like $Name })
+            foreach ($item in $matchingItems) {
+                Set-Item -LiteralPath "TSEnv:\$($item.Name)" -Value "" -Force -ErrorAction Stop | Out-Null
+                Write-PSDWizardLog -Message "Cleared property: $($item.Name)" -Component $FunctionName
             }
         }
         else {
-            $tsenv.Value($Name) = ""
-            Write-PSDWizardLog -Message "Removed property: $Name" -Component $FunctionName
+            Set-Item -LiteralPath "TSEnv:\$Name" -Value "" -Force -ErrorAction Stop | Out-Null
+            Write-PSDWizardLog -Message "Cleared property: $Name" -Component $FunctionName
         }
-        
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($tsenv) | Out-Null
     }
     catch {
         Write-PSDWizardLog -Message "Error removing TSEnv property '$Name': $($_.Exception.Message)" -LogLevel 2 -Component $FunctionName
@@ -995,9 +988,9 @@ Function Get-PSDWizardLocale {
         [Parameter(Mandatory=$false)]
         [string]$Path
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
-    
+
     try {
         # Determine path to XML file
         if (-not $Path) {
@@ -1006,10 +999,10 @@ Function Get-PSDWizardLocale {
                 $Path = "$Path\Scripts"
             }
         }
-        
+
         $xmlFile = Join-Path $Path "PSDListOfLanguages.xml"
         Write-PSDWizardLog -Message "Loading locales from: $xmlFile" -Component $FunctionName
-        
+
         if (Test-Path $xmlFile) {
             [xml]$xmlData = Get-Content $xmlFile -Raw
             $locales = $xmlData.Locales.Locale | ForEach-Object {
@@ -1022,13 +1015,13 @@ Function Get-PSDWizardLocale {
                     KeyboardLayout = $_.KeyboardLayout
                 }
             }
-            
+
             Write-PSDWizardLog -Message "Loaded $($locales.Count) locales" -Component $FunctionName
             return $locales
         }
         else {
             Write-PSDWizardLog -Message "XML file not found, returning sample data" -LogLevel 1 -Component $FunctionName
-            
+
             # Return sample data if file not found
             return @(
                 [PSCustomObject]@{ ID='0409'; Name='English (United States)'; Language='English'; Culture='en-US'; KeyboardID='00000409'; KeyboardLayout='0409:00000409' }
@@ -1070,9 +1063,9 @@ Function Get-PSDWizardTimeZoneIndex {
         [Parameter(Mandatory=$false)]
         [string]$Path
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
-    
+
     try {
         # Determine path to XML file
         if (-not $Path) {
@@ -1081,10 +1074,10 @@ Function Get-PSDWizardTimeZoneIndex {
                 $Path = "$Path\Scripts"
             }
         }
-        
+
         $xmlFile = Join-Path $Path "PSDListOfTimeZoneIndex.xml"
         Write-PSDWizardLog -Message "Loading timezones from: $xmlFile" -Component $FunctionName
-        
+
         if (Test-Path $xmlFile) {
             [xml]$xmlData = Get-Content $xmlFile -Raw
             $timezones = $xmlData.TimeZoneIndex.Index | ForEach-Object {
@@ -1096,13 +1089,13 @@ Function Get-PSDWizardTimeZoneIndex {
                     UTC = $_.UTC
                 }
             }
-            
+
             Write-PSDWizardLog -Message "Loaded $($timezones.Count) timezones" -Component $FunctionName
             return $timezones
         }
         else {
             Write-PSDWizardLog -Message "XML file not found, returning sample data" -LogLevel 1 -Component $FunctionName
-            
+
             # Return sample data if file not found
             return @(
                 [PSCustomObject]@{ id='4'; TimeZone='(GMT-08:00) Pacific Standard Time'; DisplayName='Pacific Standard Time'; Name='Pacific Time (US and Canada)'; UTC='UTC-08:00' }
@@ -1189,19 +1182,19 @@ Function Confirm-PSDWizardOSDJoinAccount {
     Param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Controls.TextBox]$UserNameObject,
-        
+
         [Parameter(Mandatory=$false)]
         $OutputObject,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Passthru
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     $username = $UserNameObject.Text.Trim()
     $isValid = $false
     $message = ""
-    
+
     if ([string]::IsNullOrWhiteSpace($username)) {
         $message = "Username cannot be empty"
         $isValid = $false
@@ -1213,9 +1206,9 @@ Function Confirm-PSDWizardOSDJoinAccount {
     else {
         $message = "Account contains a character not supported by Active Directory"
     }
-    
+
     Write-PSDWizardLog -Message "Account validation: '$username' = $isValid" -Component $FunctionName
-    
+
     # Update UI if output object provided
     if ($OutputObject) {
         $OutputObject.Text = $message
@@ -1226,7 +1219,7 @@ Function Confirm-PSDWizardOSDJoinAccount {
             $OutputObject.Foreground = "Red"
         }
     }
-    
+
     if ($Passthru) {
         return $isValid
     }
@@ -1256,30 +1249,30 @@ Function Invoke-PSDWizardFieldValidation {
     Param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Window]$Window,
-        
+
         [Parameter(Mandatory=$true)]
         [string]$ControlName,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$ValidationCanvasName,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$UpdateNextButton
     )
-    
+
     $FunctionName = 'Invoke-PSDWizardFieldValidation'
     $isValid = $true
     $message = ""
-    
+
     # Get the control
     $control = $Window.FindName($ControlName)
     if (-not $control) {
         Write-PSDWizardLog -Message "Control '$ControlName' not found" -LogLevel 2 -Component $FunctionName
         return $false
     }
-    
+
     $value = $control.Text.Trim()
-    
+
     # Determine validation type based on control name
     switch -Regex ($ControlName) {
         'OSDComputerName' {
@@ -1305,7 +1298,7 @@ Function Invoke-PSDWizardFieldValidation {
                 $message = "Valid computer name"
             }
         }
-        
+
         'JoinDomain' {
             if ([string]::IsNullOrWhiteSpace($value)) {
                 # Empty is valid - user might choose workgroup
@@ -1325,7 +1318,7 @@ Function Invoke-PSDWizardFieldValidation {
                 }
             }
         }
-        
+
         'JoinWorkgroup' {
             if ([string]::IsNullOrWhiteSpace($value)) {
                 # Empty is valid - user might choose domain
@@ -1351,7 +1344,7 @@ Function Invoke-PSDWizardFieldValidation {
                 }
             }
         }
-        
+
         'DomainAdmin|OSDAddAdmin' {
             if ([string]::IsNullOrWhiteSpace($value)) {
                 # Empty is valid (might be optional)
@@ -1363,7 +1356,7 @@ Function Invoke-PSDWizardFieldValidation {
                 $accounts = $value -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
                 $allAccountsValid = $true
                 $invalidAccount = ""
-                
+
                 foreach ($account in $accounts) {
                     if (-not (Test-PSDWizardDomainAccountName -AccountName $account)) {
                         $allAccountsValid = $false
@@ -1371,7 +1364,7 @@ Function Invoke-PSDWizardFieldValidation {
                         break
                     }
                 }
-                
+
                 if ($allAccountsValid) {
                     $isValid = $true
                     if ($accounts.Count -gt 1) {
@@ -1387,7 +1380,7 @@ Function Invoke-PSDWizardFieldValidation {
                 }
             }
         }
-        
+
         'DomainAdminDomain' {
             if ([string]::IsNullOrWhiteSpace($value)) {
                 # Empty shown as optional, but comprehensive validation will catch it
@@ -1407,29 +1400,29 @@ Function Invoke-PSDWizardFieldValidation {
                 }
             }
         }
-        
+
         default {
             Write-PSDWizardLog -Message "No validation rule for control '$ControlName'" -LogLevel 1 -Component $FunctionName
             return $true
         }
     }
-    
+
     # Update validation canvas if provided
     if ($ValidationCanvasName) {
         # The ValidationCanvasName points to the TextBox (e.g., _detTabValidation_Name)
         # We need to also control the parent Canvas and the Alert/Check icons
         $validationTextBox = $Window.FindName($ValidationCanvasName)
-        
+
         # Get parent canvas name by removing "_Name" suffix
         $parentCanvasName = $ValidationCanvasName -replace '_Name$', ''
         $parentCanvas = $Window.FindName($parentCanvasName)
-        
+
         # Get alert and check icon names
         $alertIconName = $ValidationCanvasName -replace '_Name$', '_Alert'
         $checkIconName = $ValidationCanvasName -replace '_Name$', '_Check'
         $alertIcon = $Window.FindName($alertIconName)
         $checkIcon = $Window.FindName($checkIconName)
-        
+
         if ([string]::IsNullOrWhiteSpace($message)) {
             # Hide entire validation canvas when no message
             if ($parentCanvas) {
@@ -1445,12 +1438,12 @@ Function Invoke-PSDWizardFieldValidation {
                 $parentCanvas.Visibility = "Visible"
                 $parentCanvas.Background = if ($isValid) { "LightGreen" } else { "LightPink" }
             }
-            
+
             if ($validationTextBox) {
                 $validationTextBox.Text = $message
                 $validationTextBox.Foreground = if ($isValid) { "Green" } else { "Red" }
             }
-            
+
             # Show/hide alert and check icons based on validation state
             if ($alertIcon) {
                 $alertIcon.Visibility = if ($isValid) { "Hidden" } else { "Visible" }
@@ -1460,19 +1453,19 @@ Function Invoke-PSDWizardFieldValidation {
             }
         }
     }
-    
+
     # Update Next button if requested
     if ($UpdateNextButton) {
         $btnNext = $Window.FindName('_wizNext')
         if ($btnNext) {
             Write-PSDWizardLog -Message "Setting Next button IsEnabled = $isValid for '$ControlName'" -Component $FunctionName
             $btnNext.IsEnabled = $isValid
-            
+
             # Also manage tab navigation - disable future tabs when Next is disabled
             $tabControl = $Window.FindName('_wizTabControl')
             if ($tabControl) {
                 $currentTabIndex = $tabControl.SelectedIndex
-                
+
                 if (-not $isValid) {
                     # Validation failed - disable all tabs after current one
                     # This prevents users from clicking ahead when validation fails
@@ -1499,7 +1492,7 @@ Function Invoke-PSDWizardFieldValidation {
     else {
         Write-PSDWizardLog -Message "UpdateNextButton not requested for '$ControlName'" -Component $FunctionName
     }
-    
+
     Write-PSDWizardLog -Message "Validated '$ControlName' = $isValid ($message)" -Component $FunctionName
     return $isValid
 }
@@ -1526,19 +1519,19 @@ Function Confirm-PSDWizardComputerName {
     Param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Controls.TextBox]$ComputerNameObject,
-        
+
         [Parameter(Mandatory=$false)]
         $OutputObject,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Passthru
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     $computerName = $ComputerNameObject.Text.Trim()
     $isValid = $false
     $message = ""
-    
+
     if ([string]::IsNullOrWhiteSpace($computerName)) {
         $message = "Computer name cannot be empty"
         $isValid = $false
@@ -1559,9 +1552,9 @@ Function Confirm-PSDWizardComputerName {
         $isValid = $true
         $message = "Valid computer name"
     }
-    
+
     Write-PSDWizardLog -Message "Computer name validation: '$computerName' = $isValid" -Component $FunctionName
-    
+
     if ($OutputObject) {
         # OutputObject is the TextBox (e.g., _detTabValidation_Name)
         # Need to also control parent Canvas
@@ -1571,20 +1564,20 @@ Function Confirm-PSDWizardComputerName {
             $parentCanvas = $wnd.FindName($parentCanvasName)
             $alertIcon = $wnd.FindName($OutputObject.Name -replace '_Name$', '_Alert')
             $checkIcon = $wnd.FindName($OutputObject.Name -replace '_Name$', '_Check')
-            
+
             if ($parentCanvas) {
                 $parentCanvas.Visibility = "Visible"
                 $parentCanvas.Background = if ($isValid) { "LightGreen" } else { "LightPink" }
             }
-            
+
             $OutputObject.Text = $message
             $OutputObject.Foreground = if ($isValid) { "Green" } else { "Red" }
-            
+
             if ($alertIcon) { $alertIcon.Visibility = if ($isValid) { "Hidden" } else { "Visible" } }
             if ($checkIcon) { $checkIcon.Visibility = if ($isValid) { "Visible" } else { "Hidden" } }
         }
     }
-    
+
     if ($Passthru) {
         return $isValid
     }
@@ -1612,23 +1605,23 @@ Function Confirm-PSDWizardFQDN {
     Param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Controls.TextBox]$DomainNameObject,
-        
+
         [Parameter(Mandatory=$false)]
         $OutputObject,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Passthru
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     $domainName = $DomainNameObject.Text.Trim()
     $isValid = $false
     $message = ""
-    
+
     # FQDN regex: allows domain.com, sub.domain.com, etc.
     # Must be 3-253 characters, each label 1-63 chars
     $fqdnRegex = '(?=^.{3,253}$)(^(((?!-)[a-zA-Z0-9-]{1,63}(?<!-))|((?!-)[a-zA-Z0-9-]{1,63}(?<!-)\.)+[a-zA-Z]{2,63})$)'
-    
+
     if ([string]::IsNullOrWhiteSpace($domainName)) {
         $message = "Domain name cannot be empty"
         $isValid = $false
@@ -1641,9 +1634,9 @@ Function Confirm-PSDWizardFQDN {
         $isValid = $true
         $message = "Valid domain name"
     }
-    
+
     Write-PSDWizardLog -Message "Domain name validation: '$domainName' = $isValid" -Component $FunctionName
-    
+
     if ($OutputObject) {
         $wnd = [System.Windows.Window]::GetWindow($OutputObject)
         if ($wnd -and $OutputObject.Name) {
@@ -1651,20 +1644,20 @@ Function Confirm-PSDWizardFQDN {
             $parentCanvas = $wnd.FindName($parentCanvasName)
             $alertIcon = $wnd.FindName($OutputObject.Name -replace '_Name$', '_Alert')
             $checkIcon = $wnd.FindName($OutputObject.Name -replace '_Name$', '_Check')
-            
+
             if ($parentCanvas) {
                 $parentCanvas.Visibility = "Visible"
                 $parentCanvas.Background = if ($isValid) { "LightGreen" } else { "LightPink" }
             }
-            
+
             $OutputObject.Text = $message
             $OutputObject.Foreground = if ($isValid) { "Green" } else { "Red" }
-            
+
             if ($alertIcon) { $alertIcon.Visibility = if ($isValid) { "Hidden" } else { "Visible" } }
             if ($checkIcon) { $checkIcon.Visibility = if ($isValid) { "Visible" } else { "Hidden" } }
         }
     }
-    
+
     if ($Passthru) {
         return $isValid
     }
@@ -1692,19 +1685,19 @@ Function Confirm-PSDWizardWorkgroup {
     Param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Controls.TextBox]$WorkgroupNameObject,
-        
+
         [Parameter(Mandatory=$false)]
         $OutputObject,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Passthru
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     $workgroupName = $WorkgroupNameObject.Text.Trim()
     $isValid = $false
     $message = ""
-    
+
     if ([string]::IsNullOrWhiteSpace($workgroupName)) {
         $message = "Workgroup name cannot be empty"
         $isValid = $false
@@ -1726,9 +1719,9 @@ Function Confirm-PSDWizardWorkgroup {
         $isValid = $true
         $message = "Valid workgroup name"
     }
-    
+
     Write-PSDWizardLog -Message "Workgroup name validation: '$workgroupName' = $isValid" -Component $FunctionName
-    
+
     if ($OutputObject) {
         $wnd = [System.Windows.Window]::GetWindow($OutputObject)
         if ($wnd -and $OutputObject.Name) {
@@ -1736,20 +1729,20 @@ Function Confirm-PSDWizardWorkgroup {
             $parentCanvas = $wnd.FindName($parentCanvasName)
             $alertIcon = $wnd.FindName($OutputObject.Name -replace '_Name$', '_Alert')
             $checkIcon = $wnd.FindName($OutputObject.Name -replace '_Name$', '_Check')
-            
+
             if ($parentCanvas) {
                 $parentCanvas.Visibility = "Visible"
                 $parentCanvas.Background = if ($isValid) { "LightGreen" } else { "LightPink" }
             }
-            
+
             $OutputObject.Text = $message
             $OutputObject.Foreground = if ($isValid) { "Green" } else { "Red" }
-            
+
             if ($alertIcon) { $alertIcon.Visibility = if ($isValid) { "Hidden" } else { "Visible" } }
             if ($checkIcon) { $checkIcon.Visibility = if ($isValid) { "Visible" } else { "Hidden" } }
         }
     }
-    
+
     if ($Passthru) {
         return $isValid
     }
@@ -1777,19 +1770,19 @@ Function Confirm-PSDWizardUserName {
     Param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Controls.TextBox]$UserNameObject,
-        
+
         [Parameter(Mandatory=$false)]
         $OutputObject,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Passthru
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     $userName = $UserNameObject.Text.Trim()
     $isValid = $false
     $message = ""
-    
+
     if ([string]::IsNullOrWhiteSpace($userName)) {
         $message = "User name cannot be empty"
         $isValid = $false
@@ -1801,9 +1794,9 @@ Function Confirm-PSDWizardUserName {
     else {
         $message = "Account contains a character not supported by Active Directory"
     }
-    
+
     Write-PSDWizardLog -Message "User name validation: '$userName' = $isValid" -Component $FunctionName
-    
+
     if ($OutputObject) {
         $wnd = [System.Windows.Window]::GetWindow($OutputObject)
         if ($wnd -and $OutputObject.Name) {
@@ -1811,20 +1804,20 @@ Function Confirm-PSDWizardUserName {
             $parentCanvas = $wnd.FindName($parentCanvasName)
             $alertIcon = $wnd.FindName($OutputObject.Name -replace '_Name$', '_Alert')
             $checkIcon = $wnd.FindName($OutputObject.Name -replace '_Name$', '_Check')
-            
+
             if ($parentCanvas) {
                 $parentCanvas.Visibility = "Visible"
                 $parentCanvas.Background = if ($isValid) { "LightGreen" } else { "LightPink" }
             }
-            
+
             $OutputObject.Text = $message
             $OutputObject.Foreground = if ($isValid) { "Green" } else { "Red" }
-            
+
             if ($alertIcon) { $alertIcon.Visibility = if ($isValid) { "Hidden" } else { "Visible" } }
             if ($checkIcon) { $checkIcon.Visibility = if ($isValid) { "Visible" } else { "Hidden" } }
         }
     }
-    
+
     if ($Passthru) {
         return $isValid
     }
@@ -1850,13 +1843,13 @@ Function Get-PSDWizardTSOSGUID {
     Param(
         [Parameter(Mandatory=$true)]
         [string]$TaskSequenceID,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$ControlPath
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
-    
+
     try {
         # Get control path from SyncHash if not specified
         if ([string]::IsNullOrWhiteSpace($ControlPath)) {
@@ -1868,31 +1861,31 @@ Function Get-PSDWizardTSOSGUID {
                 return $null
             }
         }
-        
+
         # Build path to TS.xml
         $tsXmlPath = Join-Path $ControlPath "$TaskSequenceID\TS.xml"
-        
+
         if (-not (Test-Path $tsXmlPath)) {
             Write-PSDWizardLog -Message "TS.xml not found: $tsXmlPath" -LogLevel 1 -Component $FunctionName
             return $null
         }
-        
+
         # Load and parse the TS.xml
         [xml]$tsXml = Get-Content $tsXmlPath -Encoding UTF8
-        
+
         # Find the BDD_InstallOS step and extract OSGUID
         $installOSStep = $tsXml.sequence.group.step | Where-Object { $_.Type -eq 'BDD_InstallOS' } | Select-Object -First 1
-        
+
         if ($installOSStep -and $installOSStep.defaultVarList -and $installOSStep.defaultVarList.variable) {
             $osGuidVar = $installOSStep.defaultVarList.variable | Where-Object { $_.Name -eq 'OSGUID' } | Select-Object -First 1
-            
+
             if ($osGuidVar) {
                 $osGuid = $osGuidVar.'#text'
                 Write-PSDWizardLog -Message "Found OSGUID for TS '$TaskSequenceID': $osGuid" -Component $FunctionName
                 return $osGuid
             }
         }
-        
+
         Write-PSDWizardLog -Message "No OSGUID found in TS '$TaskSequenceID'" -LogLevel 1 -Component $FunctionName
         return $null
     }
@@ -1928,29 +1921,29 @@ Function Confirm-PSDWizardPassword {
     Param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Controls.PasswordBox]$PasswordObject,
-        
+
         [Parameter(Mandatory=$true)]
         [System.Windows.Controls.PasswordBox]$ConfirmedPasswordObject,
-        
+
         [Parameter(Mandatory=$false)]
         $OutputObject,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$UpdateNextButton,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Passthru
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     $password = $PasswordObject.Password
     $confirmPassword = $ConfirmedPasswordObject.Password
     $isValid = $false
     $message = ""
-    
+
     # Check if either field has content
     $hasContent = (-not [string]::IsNullOrEmpty($password)) -or (-not [string]::IsNullOrEmpty($confirmPassword))
-    
+
     # If either field has content, BOTH must match
     if ($hasContent) {
         # If one is empty but not both, that's invalid
@@ -1973,9 +1966,9 @@ Function Confirm-PSDWizardPassword {
         $isValid = $true
         $message = ""
     }
-    
+
     Write-PSDWizardLog -Message ("{0}: Validation result = {1}, Message = '{2}'" -f $FunctionName, $isValid, $message) -Component $FunctionName
-    
+
     if ($OutputObject) {
         # Update validation canvas and message
         $wnd = [System.Windows.Window]::GetWindow($OutputObject)
@@ -1983,7 +1976,7 @@ Function Confirm-PSDWizardPassword {
             $parentCanvas = $wnd.FindName($OutputObject.Name -replace '_Name$', '')
             $alertIcon = $wnd.FindName($OutputObject.Name -replace '_Name$', '_Alert')
             $checkIcon = $wnd.FindName($OutputObject.Name -replace '_Name$', '_Check')
-            
+
             if ($parentCanvas) {
                 # Hide canvas for empty passwords, show for valid/invalid
                 if ([string]::IsNullOrEmpty($message)) {
@@ -1994,34 +1987,34 @@ Function Confirm-PSDWizardPassword {
                     $parentCanvas.Background = if ($isValid) { "LightGreen" } else { "LightPink" }
                 }
             }
-            
+
             $OutputObject.Text = $message
             $OutputObject.Foreground = if ($isValid) { "Green" } else { "Red" }
-            
+
             if ($alertIcon) { $alertIcon.Visibility = if ($isValid -or [string]::IsNullOrEmpty($message)) { "Hidden" } else { "Visible" } }
             if ($checkIcon) { $checkIcon.Visibility = if ($isValid -and -not [string]::IsNullOrEmpty($message)) { "Visible" } else { "Hidden" } }
-            
+
             # Update Next button if requested
             if ($UpdateNextButton) {
                 $nextButton = $wnd.FindName('_wizNext')
                 if ($nextButton) {
                     # Enable Next only if passwords are valid (matching) or both empty
                     $shouldEnable = $isValid
-                    
+
                     if ([string]::IsNullOrEmpty($password) -and [string]::IsNullOrEmpty($confirmPassword)) {
                         Write-PSDWizardLog -Message ("{0}: Passwords empty, allowing navigation" -f $FunctionName) -Component $FunctionName
                     }
                     else {
                         Write-PSDWizardLog -Message ("{0}: Next button IsEnabled = {1} (passwords must match)" -f $FunctionName, $isValid) -Component $FunctionName
                     }
-                    
+
                     $nextButton.IsEnabled = $shouldEnable
-                    
+
                     # Also manage tab navigation - disable future tabs when passwords don't match
                     $tabControl = $wnd.FindName('_wizTabControl')
                     if ($tabControl) {
                         $currentTabIndex = $tabControl.SelectedIndex
-                        
+
                         if (-not $shouldEnable) {
                             # Password validation failed - disable all tabs after current one
                             for ($i = $currentTabIndex + 1; $i -lt $tabControl.Items.Count; $i++) {
@@ -2041,7 +2034,7 @@ Function Confirm-PSDWizardPassword {
             }
         }
     }
-    
+
     if ($Passthru) {
         return $isValid
     }
@@ -2051,23 +2044,23 @@ function Confirm-PSDWizardDomainRequirements {
     <#
     .SYNOPSIS
         Validates all required domain join fields are filled
-    
+
     .DESCRIPTION
         When Domain radio is selected, ensures all mandatory domain fields are completed:
         - Domain name (must be valid FQDN)
         - Domain join account username (must be valid)
         Optionally validates domain join account password matching if passwords are entered.
         This provides page-level validation for domain join operations.
-    
+
     .PARAMETER Window
         The window object containing the domain join controls
-    
+
     .PARAMETER ValidationCanvasName
         Name of the validation canvas to update (typically '_detTabValidation3_Name')
-    
+
     .PARAMETER UpdateNextButton
         If set, enables/disables the Next button based on all domain requirements
-    
+
     .EXAMPLE
         Confirm-PSDWizardDomainRequirements -Window $Window -ValidationCanvasName '_detTabValidation3_Name' -UpdateNextButton
     #>
@@ -2075,36 +2068,36 @@ function Confirm-PSDWizardDomainRequirements {
     param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Window]$Window,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$ValidationCanvasName,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$UpdateNextButton
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message ("{0}: Validating domain join requirements" -f $FunctionName) -Component $FunctionName
-    
+
     # Check if domain radio is selected
     $domainRadio = $Window.FindName('_JoinDomainRadio')
     $isDomainMode = $domainRadio -and $domainRadio.IsChecked -eq $true
-    
+
     if (-not $isDomainMode) {
         Write-PSDWizardLog -Message ("{0}: Not in domain mode, skipping domain validation" -f $FunctionName) -Component $FunctionName
         return $true
     }
-    
+
     # Get all domain controls
     $domainField = $Window.FindName('TSEnv_JoinDomain')
     $domainAdminField = $Window.FindName('TSEnv_DomainAdmin')
     $domainAdminDomainField = $Window.FindName('TSEnv_DomainAdminDomain')
     $domainAdminPasswordField = $Window.FindName('TSEnv_DomainAdminPassword')
     $domainAdminConfirmPasswordField = $Window.FindName('_DomainAdminConfirmPassword')
-    
+
     $allValid = $true
     $validationMessages = @()
-    
+
     # Validate domain name (required and must be valid FQDN)
     if ($domainField) {
         $domainValue = $domainField.Text
@@ -2121,7 +2114,7 @@ function Confirm-PSDWizardDomainRequirements {
             }
         }
     }
-    
+
     # Validate domain join account username (required)
     if ($domainAdminField) {
         $adminValue = $domainAdminField.Text
@@ -2134,7 +2127,7 @@ function Confirm-PSDWizardDomainRequirements {
             $validationMessages += "Domain join account contains an unsupported character"
         }
     }
-    
+
     # Validate domain admin domain (required)
     if ($domainAdminDomainField) {
         $adminDomainValue = $domainAdminDomainField.Text
@@ -2151,12 +2144,12 @@ function Confirm-PSDWizardDomainRequirements {
             }
         }
     }
-    
+
     # Validate domain join account passwords (required and must match)
     if ($domainAdminPasswordField -and $domainAdminConfirmPasswordField) {
         $password = $domainAdminPasswordField.Password
         $confirmPassword = $domainAdminConfirmPasswordField.Password
-        
+
         if ([string]::IsNullOrEmpty($password)) {
             $allValid = $false
             $validationMessages += "Domain join account password is required"
@@ -2170,7 +2163,7 @@ function Confirm-PSDWizardDomainRequirements {
             $validationMessages += "Domain join account passwords do not match"
         }
     }
-    
+
     # Update validation canvas if provided
     if ($ValidationCanvasName) {
         $validationTextBox = $Window.FindName($ValidationCanvasName)
@@ -2178,7 +2171,7 @@ function Confirm-PSDWizardDomainRequirements {
             $parentCanvas = $Window.FindName($ValidationCanvasName -replace '_Name$', '')
             $alertIcon = $Window.FindName($ValidationCanvasName -replace '_Name$', '_Alert')
             $checkIcon = $Window.FindName($ValidationCanvasName -replace '_Name$', '_Check')
-            
+
             if ($allValid) {
                 if ($parentCanvas) { $parentCanvas.Visibility = "Hidden" }
                 $validationTextBox.Text = ""
@@ -2191,25 +2184,25 @@ function Confirm-PSDWizardDomainRequirements {
                 }
                 $validationTextBox.Text = $message
                 $validationTextBox.Foreground = "Red"
-                
+
                 if ($alertIcon) { $alertIcon.Visibility = "Visible" }
                 if ($checkIcon) { $checkIcon.Visibility = "Hidden" }
             }
         }
     }
-    
+
     # Update Next button if requested
     if ($UpdateNextButton) {
         $nextButton = $Window.FindName('_wizNext')
         if ($nextButton) {
             $nextButton.IsEnabled = $allValid
             Write-PSDWizardLog -Message ("{0}: Domain requirements {1}, Next button IsEnabled = {2}" -f $FunctionName, $(if($allValid){"met"}else{"not met"}), $allValid) -Component $FunctionName
-            
+
             # Also manage tab navigation - disable future tabs when requirements not met
             $tabControl = $Window.FindName('_wizTabControl')
             if ($tabControl) {
                 $currentTabIndex = $tabControl.SelectedIndex
-                
+
                 if (-not $allValid) {
                     # Requirements not met - disable all tabs after current one
                     for ($i = $currentTabIndex + 1; $i -lt $tabControl.Items.Count; $i++) {
@@ -2227,7 +2220,7 @@ function Confirm-PSDWizardDomainRequirements {
             }
         }
     }
-    
+
     Write-PSDWizardLog -Message ("{0}: Domain validation result = {1}" -f $FunctionName, $allValid) -Component $FunctionName
     return $allValid
 }
@@ -2236,27 +2229,27 @@ function Invoke-PSDWizardReadinessChecks {
     <#
     .SYNOPSIS
         Runs deployment readiness validation checks
-    
+
     .DESCRIPTION
         Executes up to 4 readiness check functions from a specified script.
         Updates validation canvases with results and controls Next button based on
         SkipReadinessCheck and PSDReadinessAllowBypass settings.
-        
+
         Respects these TSEnv properties:
         - SkipReadinessCheck: If "YES", skips all checks
         - PSDReadinessAllowBypass: If "YES", allows navigation even if checks fail
         - PSDReadinessScript: Name of script file in PSDResources\Readiness\
         - PSDReadinessCheck1-4: Function names to call from the readiness script
-    
+
     .PARAMETER Window
         The window object containing the deployment readiness page controls
-    
+
     .PARAMETER ResourcePath
         Path to PSDResources folder containing Readiness scripts
-    
+
     .PARAMETER TSEnvSettings
         Hashtable containing TS environment variables
-    
+
     .EXAMPLE
         Invoke-PSDWizardReadinessChecks -Window $Window -ResourcePath "C:\Deploy\Scripts\PSDWizardNew" -TSEnvSettings $SyncHash.TSEnvSettings
     #>
@@ -2264,26 +2257,26 @@ function Invoke-PSDWizardReadinessChecks {
     param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Window]$Window,
-        
+
         [Parameter(Mandatory=$true)]
         [string]$ResourcePath,
-        
+
         [Parameter(Mandatory=$false)]
         [hashtable]$TSEnvSettings
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message ("{0}: Starting readiness checks" -f $FunctionName) -Component $FunctionName
-    
+
     # Check if readiness checks should be skipped
     $skipChecks = $false
     if ($TSEnvSettings -and $TSEnvSettings.ContainsKey('SkipReadinessCheck')) {
         $skipChecks = $TSEnvSettings['SkipReadinessCheck'] -ieq 'YES'
     }
-    
+
     if ($skipChecks) {
         Write-PSDWizardLog -Message ("{0}: SkipReadinessCheck=YES, hiding all validation canvases" -f $FunctionName) -Component $FunctionName
-        
+
         # Hide all 4 validation canvases
         for ($i = 1; $i -le 4; $i++) {
             $canvasName = "_depTabValidation0$i"
@@ -2292,22 +2285,22 @@ function Invoke-PSDWizardReadinessChecks {
                 $canvas.Visibility = "Hidden"
             }
         }
-        
+
         # Enable Next button
         $nextButton = $Window.FindName('_wizNext')
         if ($nextButton) {
             $nextButton.IsEnabled = $true
         }
-        
+
         return $true
     }
-    
+
     # Get readiness script name
     $readinessScript = $null
     if ($TSEnvSettings -and $TSEnvSettings.ContainsKey('PSDReadinessScript')) {
         $readinessScript = $TSEnvSettings['PSDReadinessScript']
     }
-    
+
     if ([string]::IsNullOrWhiteSpace($readinessScript)) {
         Write-PSDWizardLog -Message ("{0}: No PSDReadinessScript specified, hiding validation canvases" -f $FunctionName) -LogLevel 2 -Component $FunctionName
         # Hide all canvases
@@ -2320,17 +2313,17 @@ function Invoke-PSDWizardReadinessChecks {
         }
         return $true
     }
-    
+
     # Build path to readiness script
     $readinessPath = Join-Path $ResourcePath "PSDResources\Readiness\$readinessScript"
-    
+
     if (-not (Test-Path $readinessPath)) {
         Write-PSDWizardLog -Message ("{0}: Readiness script not found: $readinessPath" -f $FunctionName) -LogLevel 3 -Component $FunctionName
         return $false
     }
-    
+
     Write-PSDWizardLog -Message ("{0}: Loading readiness script: $readinessPath" -f $FunctionName) -Component $FunctionName
-    
+
     # Dot-source the readiness script to load its functions
     try {
         . $readinessPath
@@ -2340,82 +2333,82 @@ function Invoke-PSDWizardReadinessChecks {
         Write-PSDWizardLog -Message ("{0}: Error loading readiness script: $($_.Exception.Message)" -f $FunctionName) -LogLevel 3 -Component $FunctionName
         return $false
     }
-    
+
     # Run each readiness check (up to 4)
     $allChecksPassed = $true
     $checksRun = 0
-    
+
     for ($i = 1; $i -le 4; $i++) {
         $checkKey = "PSDReadinessCheck$i"
         $canvasName = "_depTabValidation0$i"
-        
+
         $canvas = $Window.FindName($canvasName)
         $textBox = $Window.FindName("${canvasName}_Name")
         $alertIcon = $Window.FindName("${canvasName}_Alert")
         $checkIcon = $Window.FindName("${canvasName}_Check")
-        
+
         # Check if this readiness check is defined
         if ($TSEnvSettings -and $TSEnvSettings.ContainsKey($checkKey)) {
             $functionName = $TSEnvSettings[$checkKey]
-            
+
             if ([string]::IsNullOrWhiteSpace($functionName)) {
                 if ($canvas) { $canvas.Visibility = "Hidden" }
                 continue
             }
-            
+
             Write-PSDWizardLog -Message ("{0}: Running check $i`: $functionName" -f $FunctionName) -Component $FunctionName
-            
+
             try {
                 # Call the readiness function
                 $result = & $functionName
                 $checksRun++
-                
+
                 # Parse result
                 $ready = $result.Ready -eq $true -or $result.Ready -ieq 'True'
                 $message = $result.Message
-                
+
                 Write-PSDWizardLog -Message ("{0}: Check $i result - Ready: $ready, Message: '$message'" -f $FunctionName) -Component $FunctionName
-                
+
                 # Update validation canvas
                 if ($canvas) {
                     $canvas.Visibility = "Visible"
                     $canvas.Background = if ($ready) { "LightGreen" } else { "LightPink" }
                 }
-                
+
                 if ($textBox) {
                     $textBox.Text = $message
                     $textBox.Foreground = if ($ready) { "Green" } else { "Red" }
                 }
-                
+
                 if ($alertIcon) {
                     $alertIcon.Visibility = if ($ready) { "Hidden" } else { "Visible" }
                 }
-                
+
                 if ($checkIcon) {
                     $checkIcon.Visibility = if ($ready) { "Visible" } else { "Hidden" }
                 }
-                
+
                 if (-not $ready) {
                     $allChecksPassed = $false
                 }
             }
             catch {
                 Write-PSDWizardLog -Message ("{0}: Error running check $i ($functionName): $($_.Exception.Message)" -f $FunctionName) -LogLevel 2 -Component $FunctionName
-                
+
                 # Show error in canvas
                 if ($canvas) {
                     $canvas.Visibility = "Visible"
                     $canvas.Background = "LightPink"
                 }
-                
+
                 if ($textBox) {
                     $textBox.Text = "Error: $($_.Exception.Message)"
                     $textBox.Foreground = "Red"
                 }
-                
+
                 if ($alertIcon) { $alertIcon.Visibility = "Visible" }
                 if ($checkIcon) { $checkIcon.Visibility = "Hidden" }
-                
+
                 $allChecksPassed = $false
             }
         }
@@ -2426,25 +2419,25 @@ function Invoke-PSDWizardReadinessChecks {
             }
         }
     }
-    
+
     Write-PSDWizardLog -Message ("{0}: Ran $checksRun readiness checks, All passed: $allChecksPassed" -f $FunctionName) -Component $FunctionName
-    
+
     # Determine if Next button should be enabled
     # Check PSDReadinessAllowBypass setting
     $allowBypass = $false
     if ($TSEnvSettings -and $TSEnvSettings.ContainsKey('PSDReadinessAllowBypass')) {
         $allowBypass = $TSEnvSettings['PSDReadinessAllowBypass'] -ieq 'YES' -or $TSEnvSettings['PSDReadinessAllowBypass'] -ieq 'True'
     }
-    
+
     $enableNext = $allChecksPassed -or $allowBypass
-    
+
     Write-PSDWizardLog -Message ("{0}: PSDReadinessAllowBypass=$allowBypass, Enabling Next button: $enableNext" -f $FunctionName) -Component $FunctionName
-    
+
     $nextButton = $Window.FindName('_wizNext')
     if ($nextButton) {
         $nextButton.IsEnabled = $enableNext
     }
-    
+
     return $allChecksPassed
 }
 
@@ -2473,9 +2466,9 @@ Function Get-PSDWizardRandomAlphanumericString {
         [Parameter(Mandatory=$false)]
         [int]$Length = 8
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
-    
+
     try {
         $randomString = -join ((0x30..0x39) + (0x41..0x5A) + (0x61..0x7A) | Get-Random -Count $Length | ForEach-Object { [char]$_ })
         Write-PSDWizardLog -Message "Generated random string of length $Length" -Component $FunctionName
@@ -2517,15 +2510,15 @@ Function Set-PSDWizardStringLength {
     Param(
         [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true)]
         [string]$InputString,
-        
+
         [Parameter(Mandatory=$true, Position=1)]
         [int]$Length,
-        
+
         [Parameter(Mandatory=$false, Position=2)]
         [ValidateSet('Left', 'Right')]
         [string]$TrimDirection = 'Right'
     )
-    
+
     Begin {
         $FunctionName = $MyInvocation.MyCommand.Name
     }
@@ -2554,7 +2547,7 @@ Function Set-PSDWizardStringLength {
             else {
                 $result = $InputString
             }
-            
+
             return $result
         }
         catch {
@@ -2576,7 +2569,7 @@ Function Expand-PSDWizardString {
         - %MACADDRESS% or %MACADDRESS:n% - Primary MAC address without colons
         - %ASSETTAG% or %ASSETTAG:n% - System asset tag
         - %{TSEnvVar}% - Any Task Sequence variable
-        
+
         Supports truncation syntax:
         - %SERIAL:5% - Take first 5 characters from right
         - %5:SERIAL% - Take first 5 characters from left
@@ -2605,40 +2598,41 @@ Function Expand-PSDWizardString {
         [AllowEmptyString()]
         [string]$InputString
     )
-    
+
     Begin {
         $FunctionName = $MyInvocation.MyCommand.Name
     }
-    
+
     Process {
         # Return empty string if input is empty
         if ([string]::IsNullOrWhiteSpace($InputString)) {
             return $InputString
         }
-        
+
         # Check if string contains any variables
         if ($InputString -notmatch '%') {
             Write-PSDWizardLog -Message "No variables found in string: $InputString" -Component $FunctionName
             return $InputString
         }
-        
+
         Write-PSDWizardLog -Message "Expanding variables in string: $InputString" -Component $FunctionName
-        
+
         $result = $InputString
-        
+
         # Find all %...% patterns using regex
         $pattern = '%([^%]+)%'
-        $matches = [regex]::Matches($InputString, $pattern)
-        
-        foreach ($match in $matches) {
+        # Not $matches - that is an automatic variable and -match below would clobber it
+        $varMatches = [regex]::Matches($InputString, $pattern)
+
+        foreach ($match in $varMatches) {
             $fullMatch = $match.Value              # e.g., "%SERIAL:5%"
             $innerText = $match.Groups[1].Value    # e.g., "SERIAL:5"
-            
+
             # Parse variable name and optional truncation
             $varName = $innerText
             $truncateLength = 0
             $truncateDirection = 'Right'
-            
+
             # Check for truncation syntax: SERIAL:5 or 5:SERIAL
             if ($innerText -match '^(\d{1,2}):(.+)$') {
                 # Format: 5:SERIAL (left truncation)
@@ -2652,10 +2646,10 @@ Function Expand-PSDWizardString {
                 $truncateLength = [int]$Matches[2]
                 $truncateDirection = 'Right'
             }
-            
+
             # Get the replacement value based on variable type
             $replacement = $null
-            
+
             switch -Regex ($varName) {
                 '^SERIAL(NUMBER)?$' {
                     $replacement = Get-PSDWizardTSEnvProperty 'SerialNumber' -ValueOnly
@@ -2666,7 +2660,7 @@ Function Expand-PSDWizardString {
                         Write-PSDWizardLog -Message "Found SERIAL: $replacement" -Component $FunctionName
                     }
                 }
-                
+
                 '^RAND$' {
                     # Calculate length for RAND if not specified
                     if ($truncateLength -eq 0) {
@@ -2678,7 +2672,7 @@ Function Expand-PSDWizardString {
                     Write-PSDWizardLog -Message "Generated RAND($truncateLength): $replacement" -Component $FunctionName
                     $truncateLength = 0  # Already sized correctly
                 }
-                
+
                 '^MACADDRESS$' {
                     $replacement = Get-PSDWizardTSEnvProperty 'MacAddress' -ValueOnly
                     if ([string]::IsNullOrEmpty($replacement)) {
@@ -2690,7 +2684,7 @@ Function Expand-PSDWizardString {
                         Write-PSDWizardLog -Message "Found MACADDRESS: $replacement" -Component $FunctionName
                     }
                 }
-                
+
                 '^ASSETTAG$' {
                     $replacement = Get-PSDWizardTSEnvProperty 'AssetTag' -ValueOnly
                     if ([string]::IsNullOrEmpty($replacement)) {
@@ -2700,7 +2694,7 @@ Function Expand-PSDWizardString {
                         Write-PSDWizardLog -Message "Found ASSETTAG: $replacement" -Component $FunctionName
                     }
                 }
-                
+
                 default {
                     # PSDGather resolves CustomSettings before the wizard launches.
                     $replacement = Get-PSDWizardTSEnvProperty $varName -ValueOnly
@@ -2712,21 +2706,26 @@ Function Expand-PSDWizardString {
                     }
                 }
             }
-            
+
             # Apply truncation if needed and replacement was found
             if (-not [string]::IsNullOrEmpty($replacement) -and $truncateLength -gt 0) {
                 $replacement = $replacement | Set-PSDWizardStringLength -Length $truncateLength -TrimDirection $truncateDirection
             }
-            
-            # Replace in result string (only if we got a value, otherwise keep placeholder)
-            if (-not [string]::IsNullOrEmpty($replacement)) {
-                $result = $result -replace [regex]::Escape($fullMatch), $replacement
+
+            # MDT substitutes an empty string for variables that resolve to nothing. Leaving the
+            # literal %VAR% behind produces an invalid computer name and fails length validation.
+            if ([string]::IsNullOrEmpty($replacement)) {
+                Write-PSDWizardLog -Message "Variable '$varName' resolved to empty - substituting empty string" -LogLevel 2 -Component $FunctionName
+                $replacement = ''
             }
+
+            # Literal replace: a value containing $ would be treated as a substitution pattern by -replace
+            $result = $result.Replace($fullMatch, $replacement)
         }
-        
+
         $result = $result.ToUpper()
         Write-PSDWizardLog -Message "Expanded string result: $result" -Component $FunctionName
-        
+
         return $result
     }
 }
@@ -2749,9 +2748,9 @@ Function Test-PSDWizardApplicationExist {
     #>
     [CmdletBinding()]
     Param()
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
-    
+
     try {
         # Check if running in DevelopmentMode with loaded data
         if ($script:IsDevelopmentMode -and $script:syncHash.Applications) {
@@ -2759,7 +2758,7 @@ Function Test-PSDWizardApplicationExist {
             Write-PSDWizardLog -Message "Found $appCount applications in DevelopmentMode" -Component $FunctionName
             return ($appCount -gt 0)
         }
-        
+
         # For non-DevelopmentMode, default to showing page
         # (In production, Get-PSDWizardTSChildItem would query deployment share)
         Write-PSDWizardLog -Message "Not in DevelopmentMode - defaulting to true" -Component $FunctionName
@@ -2796,25 +2795,25 @@ Function Export-PSDWizardApplication {
     Param(
         [Parameter(Mandatory=$false)]
         [string[]]$SelectedApplications,
-        
+
         [Parameter(Mandatory=$false)]
         $FieldObject
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Exporting application selections..." -Component $FunctionName
-    
+
     try {
         # CRITICAL FIX: Remove ALL existing Applications### variables first
         Write-PSDWizardLog -Message "Clearing all existing application variables..." -Component $FunctionName
         Remove-PSDWizardTSEnvProperty -Name 'Applications*' -WildCard
-        
+
         # If no applications selected, we're done
         if ($null -eq $SelectedApplications -or $SelectedApplications.Count -eq 0) {
             Write-PSDWizardLog -Message "No applications selected, all variables cleared" -Component $FunctionName
             return @()
         }
-        
+
         # Write new selections with proper indexing
         $index = 1
         foreach ($appGuid in $SelectedApplications) {
@@ -2823,7 +2822,7 @@ Function Export-PSDWizardApplication {
             Write-PSDWizardLog -Message "Set $varName = $appGuid" -Component $FunctionName
             $index++
         }
-        
+
         Write-PSDWizardLog -Message "Exported $($SelectedApplications.Count) applications successfully" -Component $FunctionName
         return $SelectedApplications
     }
@@ -2856,34 +2855,34 @@ Function Get-PSDWizardSelectedApplications {
     Param(
         [Parameter(Mandatory=$false)]
         $FieldObject,
-        
+
         [Parameter(Mandatory=$false)]
         $InputObject,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$Identifier = 'GUID',
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Passthru
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     $selectedApps = @()
-    
+
     try {
         if ($null -eq $FieldObject) {
             Write-PSDWizardLog -Message "No field object provided" -LogLevel 2 -Component $FunctionName
             return $selectedApps
         }
-        
+
         # Get selected items from UI control
         $selectedItems = $FieldObject.SelectedItems
-        
+
         if ($null -eq $selectedItems -or $selectedItems.Count -eq 0) {
             Write-PSDWizardLog -Message "No applications selected in UI" -Component $FunctionName
             return $selectedApps
         }
-        
+
         foreach ($item in $selectedItems) {
             if ($Passthru) {
                 $selectedApps += $item
@@ -2895,7 +2894,7 @@ Function Get-PSDWizardSelectedApplications {
                 }
             }
         }
-        
+
         Write-PSDWizardLog -Message "Retrieved $($selectedApps.Count) selected applications" -Component $FunctionName
         return $selectedApps
     }
@@ -2931,25 +2930,25 @@ Function Export-PSDWizardTaskSequence {
         [Parameter(Mandatory=$false)]
         [AllowEmptyString()]
         [string]$TaskSequenceID,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$AllowSkip
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Exporting task sequence selection..." -Component $FunctionName
-    
+
     try {
         # Check if skipping is enabled
         $skipTS = Get-PSDWizardTSEnvProperty -Name 'SkipTaskSequence' -ValueOnly
-        
+
         if ($skipTS -eq 'YES') {
             Write-PSDWizardLog -Message "SkipTaskSequence=YES detected" -Component $FunctionName
-            
+
             if ($AllowSkip) {
                 # FIXED: Get default/existing TaskSequenceID instead of forcing selection
                 $existingTS = Get-PSDWizardTSEnvProperty -Name 'TaskSequenceID' -ValueOnly
-                
+
                 if (-not [string]::IsNullOrWhiteSpace($existingTS)) {
                     Write-PSDWizardLog -Message "Using existing TaskSequenceID: $existingTS" -Component $FunctionName
                     return $existingTS
@@ -2960,7 +2959,7 @@ Function Export-PSDWizardTaskSequence {
                 }
             }
         }
-        
+
         # Validate TaskSequenceID if not skipping
         if ([string]::IsNullOrWhiteSpace($TaskSequenceID)) {
             if (-not $AllowSkip) {
@@ -2972,11 +2971,11 @@ Function Export-PSDWizardTaskSequence {
                 return ""
             }
         }
-        
+
         # Set the task sequence ID
         Set-PSDWizardTSEnvProperty -Name 'TaskSequenceID' -Value $TaskSequenceID
         Write-PSDWizardLog -Message "TaskSequenceID set to: $TaskSequenceID" -Component $FunctionName
-        
+
         return $TaskSequenceID
     }
     catch {
@@ -3010,19 +3009,19 @@ Function Show-PSDWizardSplashScreen {
     Param(
         [Parameter(Mandatory=$false)]
         [string]$Theme = 'Classic',
-        
+
         [Parameter(Mandatory=$false)]
         [string]$Language = 'en-US'
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Starting splashscreen..." -Component $FunctionName
-    
+
     # Create synchronized hashtable
     $syncHash = [hashtable]::Synchronized(@{})
     $syncHash.Theme = $Theme
     $syncHash.Language = $Language
-    
+
     # Create runspace
     $PSDRunSpace = [runspacefactory]::CreateRunspace()
     $syncHash.Runspace = $PSDRunSpace
@@ -3030,11 +3029,11 @@ Function Show-PSDWizardSplashScreen {
     $PSDRunSpace.ThreadOptions = "ReuseThread"
     $PSDRunSpace.Open() | Out-Null
     $PSDRunSpace.SessionStateProxy.SetVariable("syncHash", $syncHash)
-    
+
     # Splashscreen scriptblock
     $splashScript = {
         [void][System.Reflection.Assembly]::LoadWithPartialName('PresentationFramework')
-        
+
         # Theme colors
         $themeConfig = switch ($syncHash.Theme) {
             'Classic' { @{ BG='#004275'; FG='#ffffff'; State='Normal'; Width='600'; WinBG='#004275' } }
@@ -3042,13 +3041,13 @@ Function Show-PSDWizardSplashScreen {
             'Modern'  { @{ BG='#004275'; FG='#FFE8EDF9'; State='Maximized'; Width='1024'; WinBG='#1f1f1f' } }
             default   { @{ BG='#004275'; FG='#ffffff'; State='Normal'; Width='600'; WinBG='#004275' } }
         }
-        
+
         # Language strings
         $langStrings = switch ($syncHash.Language) {
             'en-US' { @{ Title='Loading PSD Wizard...'; Status='Please wait...' } }
             default { @{ Title='Loading PSD Wizard...'; Status='Please wait...' } }
         }
-        
+
         # XAML template
         $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -3061,32 +3060,32 @@ Function Show-PSDWizardSplashScreen {
             <Label x:Name="lblTitle" Content="$($langStrings.Title)" Foreground="$($themeConfig.FG)" Height="70" FontSize="30"/>
             <ProgressBar x:Name="ProgressBar" Height="20" IsIndeterminate="False" Value="0" Foreground="$($themeConfig.FG)"/>
             <TextBox x:Name="txtStatus" Text="$($langStrings.Status)" HorizontalContentAlignment="Left"
-                     BorderThickness="0" Background="$($themeConfig.BG)" Foreground="$($themeConfig.FG)" 
+                     BorderThickness="0" Background="$($themeConfig.BG)" Foreground="$($themeConfig.FG)"
                      FontSize="16" Margin="10,5,0,0" IsEnabled="False"/>
         </StackPanel>
     </Grid>
 </Window>
 "@
-        
+
         $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
         $syncHash.window = [Windows.Markup.XamlReader]::Load($reader)
-        
+
         # Store controls
         $syncHash.ProgressBar = $syncHash.window.FindName('ProgressBar')
         $syncHash.txtStatus = $syncHash.window.FindName('txtStatus')
         $syncHash.lblTitle = $syncHash.window.FindName('lblTitle')
-        
+
         # Window events
         $syncHash.Window.Add_Loaded({ $syncHash.isLoaded = $true })
         $syncHash.Window.Add_Closing({ $syncHash.isClosing = $true })
         $syncHash.Window.Add_Closed({ $syncHash.isClosed = $true })
-        
+
         # Keep splashscreen on top while launching
         $syncHash.Window.Topmost = $true
         $syncHash.Window.ShowDialog()
         $syncHash.Error = $Error
     }
-    
+
     # Start runspace
     $Pwshell = [PowerShell]::Create()
     $Pwshell.AddScript($splashScript) | Out-Null
@@ -3094,21 +3093,21 @@ Function Show-PSDWizardSplashScreen {
     $AsyncHandle = $Pwshell.BeginInvoke()
     $syncHash.PowerShell = $Pwshell
     $syncHash.AsyncHandle = $AsyncHandle
-    
+
     # Wait for window to actually load before returning
     $timeout = 0
     while (-not $syncHash.isLoaded -and $timeout -lt 50) {
         Start-Sleep -Milliseconds 100
         $timeout++
     }
-    
+
     if ($syncHash.Error) {
         Write-PSDWizardLog -Message "Splashscreen error: $($syncHash.Error)" -LogLevel 3 -Component $FunctionName
     }
     else {
         Write-PSDWizardLog -Message "Splashscreen started successfully" -Component $FunctionName
     }
-    
+
     return $syncHash
 }
 
@@ -3128,9 +3127,9 @@ Function Close-PSDWizardSplashScreen {
         [Parameter(Mandatory=$false)]
         [hashtable]$Runspace
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
-    
+
     try {
         if ($null -ne $Runspace -and -not $Runspace.RunspaceDisposed -and $null -ne $Runspace.window) {
             $Runspace.window.Dispatcher.Invoke([action]{
@@ -3146,7 +3145,7 @@ Function Close-PSDWizardSplashScreen {
                 $Runspace.Runspace.Dispose()
             }
             $Runspace.RunspaceDisposed = $true
-            
+
             Write-PSDWizardLog -Message "Splashscreen closed" -Component $FunctionName
         }
     }
@@ -3182,34 +3181,34 @@ Function Update-PSDWizardProgressBar {
     Param(
         [Parameter(Mandatory=$true)]
         [hashtable]$Runspace,
-        
+
         [Parameter(Mandatory=$false)]
         [ValidateRange(0,100)]
         [int]$PercentComplete,
-        
+
         [Parameter(Mandatory=$false)]
         [int]$Step,
-        
+
         [Parameter(Mandatory=$false)]
         [int]$MaxSteps,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Indeterminate,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$Status,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$Color
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
-    
+
     try {
         if ($null -eq $Runspace -or $null -eq $Runspace.window) {
             return
         }
-        
+
         $Runspace.window.Dispatcher.Invoke([action]{
             # Update progress mode
             if ($Indeterminate) {
@@ -3217,7 +3216,7 @@ Function Update-PSDWizardProgressBar {
             }
             else {
                 $Runspace.ProgressBar.IsIndeterminate = $false
-                
+
                 if ($PSBoundParameters.ContainsKey('PercentComplete')) {
                     $Runspace.ProgressBar.Value = $PercentComplete
                 }
@@ -3226,24 +3225,24 @@ Function Update-PSDWizardProgressBar {
                     $Runspace.ProgressBar.Value = $percent
                 }
             }
-            
+
             # Update status text
             if (-not [string]::IsNullOrWhiteSpace($Status)) {
                 $Runspace.txtStatus.Text = $Status
             }
-            
+
             # Update color if specified
             if (-not [string]::IsNullOrWhiteSpace($Color)) {
                 $Runspace.ProgressBar.Foreground = $Color
             }
-            
+
             # Force UI to refresh/render the changes
             $Runspace.ProgressBar.UpdateLayout()
         }, "Normal")
-        
+
         # Small delay to allow UI thread to process and render the changes
         Start-Sleep -Milliseconds 100
-        
+
         Write-PSDWizardLog -Message "Progress updated: $Status" -Component $FunctionName
     }
     catch {
@@ -3285,64 +3284,64 @@ Function Format-PSDWizard {
     Param(
         [Parameter(Mandatory=$true)]
         [string]$ResourcePath,
-        
+
         [Parameter(Mandatory=$true)]
         [xml]$LangDefinition,
-        
+
         [Parameter(Mandatory=$true)]
         [xml]$ThemeDefinition,
-        
+
         [Parameter(Mandatory=$false)]
         [hashtable]$TSEnvSettings = @{},
-        
+
         [Parameter(Mandatory=$false)]
         [string]$OrgName = "Organization",
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Passthru
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Building wizard UI from definitions..." -Component $FunctionName
-    
+
     try {
         # Build resource paths
         $themePath = Join-Path $ResourcePath 'Themes'
         $resourceFiles = Join-Path $ResourcePath 'Resources'
-        
+
         # Get theme files
         $templateFile = Get-PSDWizardThemeDefinition -Xml $ThemeDefinition -Section 'ThemeTemplate'
         $welcomeFile = Get-PSDWizardThemeDefinition -Xml $ThemeDefinition -Section 'WelcomeWizard'
         $paneTemplate = Get-PSDWizardThemeDefinition -Xml $ThemeDefinition -Section 'PanesTemplate'
-        
+
         $templatePath = Join-Path $themePath $templateFile
         $welcomePath = Join-Path $themePath $welcomeFile
-        
+
         if (-not (Test-Path $templatePath)) {
             throw "Template file not found: $templatePath"
         }
-        
+
         Write-PSDWizardLog -Message "Loading template: $templateFile" -Component $FunctionName
-        
+
         # Load main template
         $xamlContent = Get-Content $templatePath -Raw
         $xamlContent = $xamlContent -replace 'mc:Ignorable="d"', '' -replace 'x:N', 'N' -replace '^<Win.*', '<Window'
-        
+
         # Process Welcome Wizard
         $welcomeElement = Get-PSDWizardDefinitions -Xml $LangDefinition -Section 'WelcomeWizard'
         $startPageContent = ''
-        
+
         if ($welcomeElement -and (Test-Path $welcomePath)) {
             $skipSettings = $TSEnvSettings.Keys | Where-Object { $_ -like 'Skip*' }
             $condition = $welcomeElement.Condition.'#cdata-section'
-            
+
             if (Get-PSDWizardCondition -Condition $condition -TSEnvSettings $TSEnvSettings) {
                 Write-PSDWizardLog -Message "Loading welcome page" -Component $FunctionName
                 $startPageContent = Get-Content $welcomePath -Raw
-                
+
                 $mainTitle = ($welcomeElement.MainTitle.'#cdata-section' -replace '"', '').Trim()
                 $subTitle = ($welcomeElement.SubTitle.'#cdata-section' -replace '"', '').Trim()
-                
+
                 $startPageContent = $startPageContent -replace '@MainTitle', $mainTitle
                 $startPageContent = $startPageContent -replace '@SubTitle', $subTitle
                 $startPageContent = $startPageContent -replace '@ORG', $OrgName
@@ -3351,32 +3350,32 @@ Function Format-PSDWizard {
                 Write-PSDWizardLog -Message "Welcome page skipped by condition" -Component $FunctionName
             }
         }
-        
+
         $xamlContent = $xamlContent -replace '@StartPage', $startPageContent
-        
+
         # Update resource paths
         [xml]$xmlTemp = $xamlContent
         $mergedDictionaries = $xmlTemp.Window.'Window.Resources'.ResourceDictionary.'ResourceDictionary.MergedDictionaries'.ResourceDictionary.Source
-        
+
         if ($mergedDictionaries) {
             $resources = Get-ChildItem $resourceFiles -Filter *.xaml -ErrorAction SilentlyContinue
-            
+
             foreach ($source in $mergedDictionaries) {
                 $fileName = Split-Path $source -Leaf
                 $resourceFile = $resources | Where-Object { $_.Name -eq $fileName } | Select-Object -First 1
-                
+
                 if ($resourceFile) {
                     $xamlContent = $xamlContent -replace [regex]::Escape($source), $resourceFile.FullName
                     Write-PSDWizardLog -Message "Mapped resource: $fileName" -Component $FunctionName
                 }
             }
         }
-        
+
         # Process Panes (Tabs)
         $paneElements = Get-PSDWizardDefinitions -Xml $LangDefinition -Section 'Pane'
         $tabItems = ''
         $tabCount = 0
-        
+
         foreach ($pane in $paneElements) {
             # Evaluate conditions
             $include = $true
@@ -3387,47 +3386,47 @@ Function Format-PSDWizard {
                     break
                 }
             }
-            
+
             if (-not $include) { continue }
-            
+
             # Get pane definition
             $paneTheme = Get-PSDWizardThemeDefinition -Xml $ThemeDefinition -Section 'Pane' | Where-Object { $_.id -eq $pane.id }
-            
+
             if (-not $paneTheme -or -not $paneTheme.reference) {
                 Write-PSDWizardLog -Message "No theme definition for pane: $($pane.id)" -LogLevel 2 -Component $FunctionName
                 continue
             }
-            
+
             $panePath = Join-Path $themePath $paneTheme.reference
-            
+
             if (-not (Test-Path $panePath)) {
                 Write-PSDWizardLog -Message "Pane file not found: $panePath" -LogLevel 2 -Component $FunctionName
                 continue
             }
-            
+
             $tabCount++
             Write-PSDWizardLog -Message "Loading pane $tabCount : $($pane.Title)" -Component $FunctionName
-            
+
             # Load pane content
             $paneContent = Get-Content $panePath -Raw
-            
+
             # Merge with template
             $tabContent = $paneTemplate -replace '@TabItemContent', $paneContent
-            
+
             # Replace placeholders
             $tabTitle = $pane.Title
             $mainTitle = ($pane.MainTitle.'#cdata-section' -replace '@ORG', $OrgName -replace '"', '').Trim()
             $subTitle = ($pane.SubTitle.'#cdata-section' -replace '@ORG', $OrgName -replace '"', '').Trim()
             $context = ($pane.Context.'#cdata-section' -replace '"', '').Trim()
             $help = ($pane.Help.'#cdata-section' -replace '"', '').Trim()
-            
+
             $tabContent = $tabContent -replace '@TabTitle', $tabTitle
             $tabContent = $tabContent -replace '@MainTitle', $mainTitle
             $tabContent = $tabContent -replace '@SubTitle', $subTitle
             $tabContent = $tabContent -replace '@Context', $context
             $tabContent = $tabContent -replace '@Help', $help
             $tabContent = $tabContent -replace '@ORG', $OrgName
-            
+
             # Apply theme properties
             if ($tabCount -eq 1) {
                 $startMargin = Get-PSDWizardThemeDefinition -Xml $ThemeDefinition -Section 'PaneStartingMargin'
@@ -3435,38 +3434,38 @@ Function Format-PSDWizard {
                     $tabContent = $tabContent -replace '@margin', $startMargin
                 }
             }
-            
+
             # Replace any remaining theme properties
             $pattern = [regex]'@\w+'
             $matches = $pattern.Matches($tabContent)
-            
+
             foreach ($match in $matches) {
                 $property = $match.Value.TrimStart('@')
                 $value = $paneTheme.$property
-                
+
                 if ($value) {
                     $tabContent = $tabContent -replace $match.Value, $value
                 }
             }
-            
+
             $tabItems += $tabContent
         }
-        
+
         Write-PSDWizardLog -Message "Generated $tabCount panes" -Component $FunctionName
-        
+
         # Insert tabs into template
         $xamlContent = $xamlContent -replace '@TabItems', $tabItems
-        
+
         # Clean up XAML
         $xamlContent = $xamlContent -replace 'x:N', 'N' -replace '^<Win.*', '<Window'
         $xamlContent = $xamlContent -replace 'Click="[^"]*"', ''
         $xamlContent = $xamlContent -replace 'x:Class="[^"]*"', ''
-        
+
         # Convert to XML
         [xml]$xamlUI = $xamlContent
-        
+
         Write-PSDWizardLog -Message "XAML generation complete" -Component $FunctionName
-        
+
         if ($Passthru) {
             return $xamlUI.OuterXml
         }
@@ -3505,20 +3504,20 @@ Function Invoke-PSDWizard {
     Param(
         [Parameter(Mandatory=$true)]
         $XamlContent,
-        
+
         [Parameter(Mandatory=$true)]
         [hashtable]$SyncHash,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$ResourcePath,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$DevelopmentMode
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Initializing wizard UI..." -Component $FunctionName
-    
+
     try {
         # Load WPF directly. Add-Type scans the MDT-loaded AppDomain in WinPE and
         # can trigger the unsupported Microsoft.BDD.Core.DeploymentTools initializer.
@@ -3527,7 +3526,7 @@ Function Invoke-PSDWizard {
                 throw "Required WPF assembly could not be loaded: $assemblyName"
             }
         }
-        
+
         # Convert to string if needed
         if ($XamlContent -is [xml]) {
             $xamlString = $XamlContent.OuterXml
@@ -3535,56 +3534,56 @@ Function Invoke-PSDWizard {
         else {
             $xamlString = $XamlContent
         }
-        
+
         # Load XAML
         $reader = [System.Xml.XmlNodeReader]::new([xml]$xamlString)
         $window = [Windows.Markup.XamlReader]::Load($reader)
-        
+
         if (-not $window) {
             throw "Failed to load XAML into window"
         }
-        
+
         Write-PSDWizardLog -Message "XAML loaded successfully" -Component $FunctionName
-        
+
         # Store window in sync hash
         $SyncHash.Window = $window
         $SyncHash.UIElements = @{}
         $SyncHash.IsDevelopment = $DevelopmentMode.IsPresent
-        
+
         # Find all named elements
         $xamlDoc = [xml]$xamlString
         $namedElements = $xamlDoc.SelectNodes("//*[@Name]")
-        
+
         Write-PSDWizardLog -Message "Found $($namedElements.Count) named UI elements" -Component $FunctionName
-        
+
         foreach ($element in $namedElements) {
             $elementName = $element.Name
             $uiElement = $window.FindName($elementName)
-            
+
             if ($uiElement) {
                 $SyncHash.UIElements[$elementName] = $uiElement
             }
         }
-        
+
         # Set window properties
         $window.Title = "PSD Wizard v$($script:ModuleVersion)"
-        
+
         # Make wizard topmost during launch
         $window.Topmost = $true
-        
+
         # Find specific elements
         $versionLabel = $window.FindName('_wizVersion')
         if ($versionLabel) {
             $versionLabel.Content = "v$($script:ModuleVersion)"
         }
-        
+
         # Add window drag support if borderless
         if ($window.WindowStyle -eq 'None') {
             $window.Add_MouseLeftButtonDown({
                 $this.DragMove()
             })
         }
-        
+
         # Set Topmost to false after window loads
         $window.Add_Loaded({
             # Delay briefly then remove topmost
@@ -3596,23 +3595,23 @@ Function Invoke-PSDWizard {
             })
             $timer.Start()
         })
-        
+
         # Wire up basic navigation
         $backButton = $window.FindName('_wizBack')
         $nextButton = $window.FindName('_wizNext')
         $cancelButton = $window.FindName('_wizCancel')
         $finishButton = $window.FindName('_wizFinish')
         $tabControl = $window.FindName('_wizTabControl')
-        
+
         # Welcome page elements
         $startButton = $window.FindName('_start')
         $startPage = $window.FindName('_startPage')
         $openPSButton = $window.FindName('_startPageOpenPS')
-        
+
         if ($backButton) {
             $backButton.Visibility = 'Hidden'
         }
-        
+
         # If finish button doesn't exist, we'll use Next button as finish on last page
         $useNextAsFinish = ($null -eq $finishButton)
         if ($useNextAsFinish) {
@@ -3621,7 +3620,7 @@ Function Invoke-PSDWizard {
         else {
             $finishButton.Visibility = 'Collapsed'
         }
-        
+
         # Handle welcome page "Let's Get Started" button
         if ($startButton -and $startPage -and $tabControl) {
             $startButton.Add_Click({
@@ -3638,7 +3637,7 @@ Function Invoke-PSDWizard {
                 }
             })
         }
-        
+
         # Handle "Open PowerShell" debug button (if in dev mode)
         if ($openPSButton) {
             if ($DevelopmentMode) {
@@ -3651,39 +3650,39 @@ Function Invoke-PSDWizard {
                 $openPSButton.Visibility = 'Collapsed'
             }
         }
-        
+
         # Setup event handlers
         if ($nextButton -and $tabControl) {
             $script:useNextAsFinish = $useNextAsFinish
             $nextButton.Add_Click({
                 param($sender, $e)
                 $currentIndex = $tabControl.SelectedIndex
-                
+
                 # Get current tab to check for validation requirements
                 $currentTab = if ($currentIndex -ge 0 -and $currentIndex -lt $tabControl.Items.Count) {
                     $tabControl.Items[$currentIndex]
                 } else {
                     $null
                 }
-                
+
                 #region PAGE VALIDATION
                 # Check if current page can be bypassed/continued
                 $canContinue = $true
                 $validationMessage = $null
-                
+
                 if ($currentTab) {
                     $tabName = $currentTab.Name
                     Write-PSDWizardLog -Message "Validating page: $tabName" -Component 'Invoke-PSDWizard'
-                    
+
                     # Task Sequence page validation - require selection
                     if ($tabName -match '_wizTaskSequence|_tsTab') {
                         $tsId = $null
-                        
+
                         # Check TaskSequenceID in SyncHash
                         if ($SyncHash.TSEnvSettings -and $SyncHash.TSEnvSettings.ContainsKey('TaskSequenceID')) {
                             $tsId = $SyncHash.TSEnvSettings['TaskSequenceID']
                         }
-                        
+
                         # Also check TSEnv_TaskSequenceID textbox if it exists
                         if ([string]::IsNullOrWhiteSpace($tsId)) {
                             $tsIdBox = $window.FindName('TSEnv_TaskSequenceID')
@@ -3691,7 +3690,7 @@ Function Invoke-PSDWizard {
                                 $tsId = $tsIdBox.Text
                             }
                         }
-                        
+
                         if ([string]::IsNullOrWhiteSpace($tsId)) {
                             $canContinue = $false
                             $validationMessage = "You must select a Task Sequence before continuing."
@@ -3701,20 +3700,20 @@ Function Invoke-PSDWizard {
                             Write-PSDWizardLog -Message "Task Sequence validation passed: TaskSequenceID = $tsId" -Component 'Invoke-PSDWizard'
                         }
                     }
-                    
+
                     # Custom page validation - check for bypass setting
                     if ($tabName -match '_wizCustom|CustomPane') {
                         $allowBypass = Get-PSDWizardTSEnvProperty 'PSDWizardCustomPaneAllowBypass' -ValueOnly
-                        
+
                         if ($allowBypass -ne 'YES') {
                             # Custom page validation logic could go here
                             # For now, we'll allow bypass only if explicitly set
                             Write-PSDWizardLog -Message "Custom page '$tabName' validation: PSDWizardCustomPaneAllowBypass not set to YES" -LogLevel 1 -Component 'Invoke-PSDWizard'
-                            
+
                             # TODO: Add custom page specific validation
                             # Example: Check if required fields are filled
                             # For now, require the bypass setting
-                            
+
                             # Actually, let's NOT block custom pages by default - this would break existing deployments
                             # Only block if the page has explicit validation requirements
                             Write-PSDWizardLog -Message "Custom page allowed to continue (no explicit validation requirements)" -Component 'Invoke-PSDWizard'
@@ -3724,7 +3723,7 @@ Function Invoke-PSDWizard {
                         }
                     }
                 }
-                
+
                 # Show validation message if page cannot continue
                 if (-not $canContinue) {
                     if ($validationMessage) {
@@ -3733,28 +3732,28 @@ Function Invoke-PSDWizard {
                     return  # Stop navigation
                 }
                 #endregion PAGE VALIDATION
-                
+
                 # Check if we're on the last page and finish
                 if ($currentIndex -eq ($tabControl.Items.Count - 1)) {
                     $SyncHash.Result = 'Finished'
-                    
+
                     # Export wizard results
                     if ($SyncHash.IsDevelopment) {
                         Write-PSDWizardLog -Message "=== DEVELOPMENT MODE: Export Preview ===" -Component 'Invoke-PSDWizard'
                         Write-PSDWizardLog -Message "This is what would be exported to TSEnv in production mode:" -Component 'Invoke-PSDWizard'
-                        
+
                         # Collect all TSEnv properties that would be exported
                         $exportResults = @()
-                        
+
                         # Get all TSEnv_* controls
                         if ($SyncHash.UIElements) {
                             $tsenvControls = $SyncHash.UIElements.GetEnumerator() | Where-Object { $_.Key -like 'TSEnv_*' }
-                            
+
                             foreach ($item in $tsenvControls) {
                                 $control = $item.Value
                                 $propertyName = $item.Key -replace '^TSEnv_', ''
                                 $value = $null
-                                
+
                                 # Get value based on control type
                                 switch ($control.GetType().Name) {
                                     'TextBox' {
@@ -3788,7 +3787,7 @@ Function Invoke-PSDWizard {
                                         }
                                     }
                                 }
-                                
+
                                 # Only include properties with values
                                 if (-not [string]::IsNullOrWhiteSpace($value)) {
                                     $exportResults += [PSCustomObject]@{
@@ -3796,12 +3795,12 @@ Function Invoke-PSDWizard {
                                         Value = $value
                                         ControlType = $control.GetType().Name
                                     }
-                                    
+
                                     Write-PSDWizardLog -Message "  $propertyName = $value" -Component 'Invoke-PSDWizard'
                                 }
                             }
                         }
-                        
+
                         # Also add properties from TSEnvSettings that aren't controls (like Applications###)
                         if ($SyncHash.TSEnvSettings) {
                             foreach ($key in $SyncHash.TSEnvSettings.Keys) {
@@ -3809,14 +3808,14 @@ Function Invoke-PSDWizard {
                                 if ($exportResults | Where-Object { $_.Property -eq $key }) {
                                     continue
                                 }
-                                
+
                                 $value = $SyncHash.TSEnvSettings[$key]
-                                
+
                                 # Handle arrays (like IPAddress, DefaultGateway)
                                 if ($value -is [array]) {
                                     $value = $value -join ', '
                                 }
-                                
+
                                 # Only include properties with values
                                 if (-not [string]::IsNullOrWhiteSpace($value)) {
                                     # Special handling for Applications - show names instead of GUIDs
@@ -3827,24 +3826,24 @@ Function Invoke-PSDWizard {
                                             $value = "$($app.Name) [$appGuid]"
                                         }
                                     }
-                                    
+
                                     $exportResults += [PSCustomObject]@{
                                         Property = $key
                                         Value = $value
                                         ControlType = 'TSEnvSettings'
                                     }
-                                    
+
                                     Write-PSDWizardLog -Message "  $key = $value" -Component 'Invoke-PSDWizard'
                                 }
                             }
                         }
-                        
+
                         # Display summary
                         Write-PSDWizardLog -Message "=== Total: $($exportResults.Count) properties would be exported ===" -Component 'Invoke-PSDWizard'
-                        
+
                         # Store results in SyncHash for viewing
                         $SyncHash.ExportResults = $exportResults
-                        
+
                         # Display in console
                         Write-Host "`n" -NoNewline
                         Write-Host "=" -ForegroundColor Cyan -NoNewline
@@ -3854,13 +3853,13 @@ Function Invoke-PSDWizard {
                         Write-Host "=" * 59 -ForegroundColor Cyan
                         Write-Host "The following properties would be exported to TSEnv:" -ForegroundColor White
                         Write-Host ""
-                        
+
                         foreach ($result in ($exportResults | Sort-Object Property)) {
                             Write-Host "  $($result.Property)" -ForegroundColor Green -NoNewline
                             Write-Host " = " -NoNewline
                             Write-Host "$($result.Value)" -ForegroundColor Gray
                         }
-                        
+
                         Write-Host ""
                         Write-Host "=" -ForegroundColor Cyan -NoNewline
                         Write-Host "=" * 59 -ForegroundColor Cyan
@@ -3875,33 +3874,33 @@ Function Invoke-PSDWizard {
                         # TODO: Implement actual TSEnv export
                         Write-PSDWizardLog -Message "Exporting wizard results to TSEnv..." -Component 'Invoke-PSDWizard'
                     }
-                    
+
                     $window.Close()
                     return
                 }
-                
+
                 # Navigate to next page
                 if ($currentIndex -lt ($tabControl.Items.Count - 1)) {
                     $tabControl.SelectedIndex = $currentIndex + 1
                     $backButton.Visibility = 'Visible'
-                    
+
                     # Enable the new tab
                     $newTab = $tabControl.Items[$tabControl.SelectedIndex]
                     if ($newTab) {
                         $newTab.IsEnabled = $true
                     }
-                    
+
                     # Track visited tab
                     if ($tabControl.SelectedIndex -notin $script:VisitedTabs) {
                         $script:VisitedTabs += $tabControl.SelectedIndex
                     }
                 }
-                
+
                 # Button text is now updated in TabControl.SelectionChanged handler
                 # (removed duplicate logic here to prevent conflicts)
             })
         }
-        
+
         if ($backButton -and $tabControl) {
             $backButton.Add_Click({
                 param($sender, $e)
@@ -3909,16 +3908,16 @@ Function Invoke-PSDWizard {
                 if ($currentIndex -gt 0) {
                     $tabControl.SelectedIndex = $currentIndex - 1
                 }
-                
+
                 if ($tabControl.SelectedIndex -eq 0) {
                     $backButton.Visibility = 'Hidden'
                 }
-                
+
                 # Button text is now updated in TabControl.SelectionChanged handler
                 # (removed duplicate logic here to prevent conflicts)
             })
         }
-        
+
         if ($cancelButton) {
             $cancelButton.Add_Click({
                 param($sender, $e)
@@ -3926,29 +3925,29 @@ Function Invoke-PSDWizard {
                 $window.Close()
             })
         }
-        
+
         if ($finishButton) {
             $finishButton.Add_Click({
                 param($sender, $e)
                 $SyncHash.Result = 'Finished'
-                
+
                 # Export wizard results
                 if ($SyncHash.IsDevelopment) {
                     Write-PSDWizardLog -Message "=== DEVELOPMENT MODE: Export Preview ===" -Component 'Invoke-PSDWizard'
                     Write-PSDWizardLog -Message "This is what would be exported to TSEnv in production mode:" -Component 'Invoke-PSDWizard'
-                    
+
                     # Collect all TSEnv properties that would be exported
                     $exportResults = @()
-                    
+
                     # Get all TSEnv_* controls
                     if ($SyncHash.UIElements) {
                         $tsenvControls = $SyncHash.UIElements.GetEnumerator() | Where-Object { $_.Key -like 'TSEnv_*' }
-                        
+
                         foreach ($item in $tsenvControls) {
                             $control = $item.Value
                             $propertyName = $item.Key -replace '^TSEnv_', ''
                             $value = $null
-                            
+
                             # Get value based on control type
                             switch ($control.GetType().Name) {
                                 'TextBox' {
@@ -3982,7 +3981,7 @@ Function Invoke-PSDWizard {
                                     }
                                 }
                             }
-                            
+
                             # Only include properties with values
                             if (-not [string]::IsNullOrWhiteSpace($value)) {
                                 $exportResults += [PSCustomObject]@{
@@ -3990,12 +3989,12 @@ Function Invoke-PSDWizard {
                                     Value = $value
                                     ControlType = $control.GetType().Name
                                 }
-                                
+
                                 Write-PSDWizardLog -Message "  $propertyName = $value" -Component 'Invoke-PSDWizard'
                             }
                         }
                     }
-                    
+
                     # Also add properties from TSEnvSettings that aren't controls (like Applications###)
                     if ($SyncHash.TSEnvSettings) {
                         foreach ($key in $SyncHash.TSEnvSettings.Keys) {
@@ -4003,14 +4002,14 @@ Function Invoke-PSDWizard {
                             if ($exportResults | Where-Object { $_.Property -eq $key }) {
                                 continue
                             }
-                            
+
                             $value = $SyncHash.TSEnvSettings[$key]
-                            
+
                             # Handle arrays (like IPAddress, DefaultGateway)
                             if ($value -is [array]) {
                                 $value = $value -join ', '
                             }
-                            
+
                             # Only include properties with values
                             if (-not [string]::IsNullOrWhiteSpace($value)) {
                                 # Special handling for Applications - show names instead of GUIDs
@@ -4021,24 +4020,24 @@ Function Invoke-PSDWizard {
                                         $value = "$($app.Name) [$appGuid]"
                                     }
                                 }
-                                
+
                                 $exportResults += [PSCustomObject]@{
                                     Property = $key
                                     Value = $value
                                     ControlType = 'TSEnvSettings'
                                 }
-                                
+
                                 Write-PSDWizardLog -Message "  $key = $value" -Component 'Invoke-PSDWizard'
                             }
                         }
                     }
-                    
+
                     # Display summary
                     Write-PSDWizardLog -Message "=== Total: $($exportResults.Count) properties would be exported ===" -Component 'Invoke-PSDWizard'
-                    
+
                     # Store results in SyncHash for viewing
                     $SyncHash.ExportResults = $exportResults
-                    
+
                     # Display in console
                     Write-Host "`n" -NoNewline
                     Write-Host "=" -ForegroundColor Cyan -NoNewline
@@ -4048,13 +4047,13 @@ Function Invoke-PSDWizard {
                     Write-Host "=" * 59 -ForegroundColor Cyan
                     Write-Host "The following properties would be exported to TSEnv:" -ForegroundColor White
                     Write-Host ""
-                    
+
                     foreach ($result in ($exportResults | Sort-Object Property)) {
                         Write-Host "  $($result.Property)" -ForegroundColor Green -NoNewline
                         Write-Host " = " -NoNewline
                         Write-Host "$($result.Value)" -ForegroundColor Gray
                     }
-                    
+
                     Write-Host ""
                     Write-Host "=" -ForegroundColor Cyan -NoNewline
                     Write-Host "=" * 59 -ForegroundColor Cyan
@@ -4069,26 +4068,26 @@ Function Invoke-PSDWizard {
                     # TODO: Implement actual TSEnv export
                     Write-PSDWizardLog -Message "Exporting wizard results to TSEnv..." -Component 'Invoke-PSDWizard'
                 }
-                
+
                 $window.Close()
             })
         }
-        
+
         # Track visited tabs to allow backward navigation
         $script:VisitedTabs = @(0)  # Start page is always visited
         $script:PreviousTabIndex = 0
-        
+
         # Add TabControl SelectionChanged handler to refresh TSEnv summary on Ready page
         if ($tabControl) {
             $tabControl.Add_SelectionChanged({
                 param($sender, $e)
-                
+
                 # Update Next/Finish button text based on current tab position
                 $currentTabIndex = $sender.SelectedIndex
                 $lastTabIndex = $sender.Items.Count - 1
                 $btnNext = $window.FindName('_wizNext')
                 $btnFinish = $window.FindName('_wizFinish')
-                
+
                 # Update button text and visibility
                 if ($currentTabIndex -eq $lastTabIndex) {
                     # On last page - show Finish
@@ -4110,12 +4109,12 @@ Function Invoke-PSDWizard {
                         if ($btnNext) { $btnNext.Visibility = 'Visible' }
                     }
                 }
-                
+
                 # Track this tab as visited (allow going back to it later)
                 if ($currentTabIndex -notin $script:VisitedTabs) {
                     $script:VisitedTabs += $currentTabIndex
                 }
-                
+
                 # Prevent navigating forward to unvisited tabs (user clicked a tab they shouldn't access yet)
                 # Allow backward navigation to any visited tab
                 if ($currentTabIndex -gt $script:PreviousTabIndex) {
@@ -4124,40 +4123,40 @@ Function Invoke-PSDWizard {
                     if ($currentTabIndex -notin $script:VisitedTabs -and $btnNext -and -not $btnNext.IsEnabled) {
                         # Block forward navigation - validation hasn't passed yet
                         Write-PSDWizardLog -Message "Blocked forward tab navigation: validation not passed for previous page" -LogLevel 2 -Component 'Invoke-PSDWizard'
-                        
+
                         # Revert to previous tab
                         $sender.SelectedIndex = $script:PreviousTabIndex
                         return
                     }
                 }
-                
+
                 $script:PreviousTabIndex = $currentTabIndex
-                
+
                 # Check if the selected tab is the Ready/Summary page
                 $selectedTab = $sender.SelectedItem
                 if ($selectedTab -and $selectedTab.Name -match '_wizReady|_wizSummary') {
                     Write-PSDWizardLog -Message "Ready/Summary page selected, refreshing TSEnv ListView" -Component 'Invoke-PSDWizard'
-                    
+
                     # Find the TSEnv ListView
                     $tsenvListView = $window.FindName('TSEnv')
                     if ($tsenvListView) {
                         # Clear existing items (just set ItemsSource to null, don't call .Items.Clear())
                         $tsenvListView.ItemsSource = $null
-                        
+
                         # Collect TSEnv properties from UI controls only (not entire TSEnv)
                         # This matches the old behavior: only show what user set in the wizard
                         $tsenvSummaryData = @()
-                        
+
                         try {
                             # Find all TSEnv_* controls from SyncHash.UIElements
                             if ($SyncHash.UIElements) {
                                 $tsenvControls = $SyncHash.UIElements.GetEnumerator() | Where-Object { $_.Key -like 'TSEnv_*' }
-                                
+
                                 foreach ($item in $tsenvControls) {
                                     $control = $item.Value
                                     $propertyName = $item.Key -replace '^TSEnv_', ''
                                     $value = $null
-                                    
+
                                     # Get value based on control type
                                     switch ($control.GetType().Name) {
                                         'TextBox' {
@@ -4205,7 +4204,7 @@ Function Invoke-PSDWizard {
                                             }
                                         }
                                     }
-                                    
+
                                     # Only add if value is not null or empty
                                     if (-not [string]::IsNullOrWhiteSpace($value)) {
                                         # Special handling for Applications - show names instead of GUIDs
@@ -4217,7 +4216,7 @@ Function Invoke-PSDWizard {
                                                 $value = "$($app.Name) [$appGuid]"
                                             }
                                         }
-                                        
+
                                         $tsenvSummaryData += [PSCustomObject]@{
                                             Name = $propertyName
                                             Value = $value
@@ -4228,7 +4227,7 @@ Function Invoke-PSDWizard {
                             else {
                                 Write-PSDWizardLog -Message "SyncHash.UIElements not available, cannot populate summary" -LogLevel 2 -Component 'Invoke-PSDWizard'
                             }
-                            
+
                             # Also add properties from TSEnvSettings that aren't controls (like Applications###)
                             if ($SyncHash.TSEnvSettings) {
                                 foreach ($key in $SyncHash.TSEnvSettings.Keys) {
@@ -4236,14 +4235,14 @@ Function Invoke-PSDWizard {
                                     if ($tsenvSummaryData | Where-Object { $_.Name -eq $key }) {
                                         continue
                                     }
-                                    
+
                                     $value = $SyncHash.TSEnvSettings[$key]
-                                    
+
                                     # Handle arrays (like IPAddress, DefaultGateway)
                                     if ($value -is [array]) {
                                         $value = $value -join ', '
                                     }
-                                    
+
                                     # Only add if value is not null or empty
                                     if (-not [string]::IsNullOrWhiteSpace($value)) {
                                         # Special handling for Applications - show names instead of GUIDs
@@ -4255,7 +4254,7 @@ Function Invoke-PSDWizard {
                                                 $value = "$($app.Name) [$appGuid]"
                                             }
                                         }
-                                        
+
                                         $tsenvSummaryData += [PSCustomObject]@{
                                             Name = $key
                                             Value = $value
@@ -4263,10 +4262,10 @@ Function Invoke-PSDWizard {
                                     }
                                 }
                             }
-                            
+
                             # Sort by property name
                             $tsenvSummaryData = $tsenvSummaryData | Sort-Object Name
-                            
+
                             # Populate the ListView
                             $tsenvListView.ItemsSource = $tsenvSummaryData
                             Write-PSDWizardLog -Message "Refreshed TSEnv ListView with $($tsenvSummaryData.Count) properties from UI controls" -Component 'Invoke-PSDWizard'
@@ -4276,32 +4275,32 @@ Function Invoke-PSDWizard {
                         }
                     }
                 }
-                
+
                 #region PAGE VALIDATION ON TAB CHANGE
                 # Validate the current page and enable/disable Next button accordingly
                 if ($selectedTab) {
                     $tabName = $selectedTab.Name
                     $btnNext = $window.FindName('_wizNext')
-                    
+
                     if ($btnNext) {
                         $shouldEnableNext = $true
-                        
+
                         # Task Sequence page validation
                         if ($tabName -match '_wizTaskSequence|_tsTab') {
                             $tsId = $null
-                            
+
                             # Check TaskSequenceID
                             if ($SyncHash.TSEnvSettings -and $SyncHash.TSEnvSettings.ContainsKey('TaskSequenceID')) {
                                 $tsId = $SyncHash.TSEnvSettings['TaskSequenceID']
                             }
-                            
+
                             if ([string]::IsNullOrWhiteSpace($tsId)) {
                                 $tsIdBox = $window.FindName('TSEnv_TaskSequenceID')
                                 if ($tsIdBox) {
                                     $tsId = $tsIdBox.Text
                                 }
                             }
-                            
+
                             if ([string]::IsNullOrWhiteSpace($tsId)) {
                                 $shouldEnableNext = $false
                                 Write-PSDWizardLog -Message "Task Sequence page: Next button disabled (no selection)" -Component 'Invoke-PSDWizard'
@@ -4310,27 +4309,27 @@ Function Invoke-PSDWizard {
                                 Write-PSDWizardLog -Message "Task Sequence page: Next button enabled (TaskSequenceID=$tsId)" -Component 'Invoke-PSDWizard'
                             }
                         }
-                        
+
                         $btnNext.IsEnabled = $shouldEnableNext
                     }
                 }
                 #endregion PAGE VALIDATION ON TAB CHANGE
             })
-            
+
             Write-PSDWizardLog -Message "Added TabControl SelectionChanged handler for TSEnv summary refresh" -Component $FunctionName
         }
-        
+
         Write-PSDWizardLog -Message "Event handlers wired" -Component $FunctionName
-        
-        # Populate data into UI controls 
+
+        # Populate data into UI controls
         Initialize-PSDWizardData -Window $window -SyncHash $SyncHash -DevelopmentMode:$DevelopmentMode
-        
+
         # Show window
         $SyncHash.Result = $null
         $dialogResult = $window.ShowDialog()
-        
+
         Write-PSDWizardLog -Message "Wizard closed. Result: $($SyncHash.Result)" -Component $FunctionName
-        
+
         return $SyncHash
     }
     catch {
@@ -4357,17 +4356,17 @@ Function Initialize-PSDWizardData {
     Param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Window]$Window,
-        
+
         [Parameter(Mandatory=$true)]
         [hashtable]$SyncHash,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$DevelopmentMode
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Initializing wizard data into UI controls" -Component $FunctionName
-    
+
     try {
         # Debug output in DevelopmentMode
         if ($DevelopmentMode -and $SyncHash.TSEnvSettings) {
@@ -4377,7 +4376,7 @@ Function Initialize-PSDWizardData {
                 Write-Host "  $($_.Key) = $value" -ForegroundColor Gray
             }
             Write-Host "===== Total: $($SyncHash.TSEnvSettings.Count) properties =====`n" -ForegroundColor Cyan
-            
+
             # Show TSEnvLists if available
             if ($SyncHash.TSEnvLists) {
                 Write-Host "===== TSEnvLists Contents (list-based properties) =====" -ForegroundColor Cyan
@@ -4388,32 +4387,33 @@ Function Initialize-PSDWizardData {
                 Write-Host "=================================================`n" -ForegroundColor Cyan
             }
         }
-        
-        # Populate TSEnv_ prefixed fields from TSEnvSettings
+
+        # Populate discovered TSEnv_ controls from the parent runspace's TSEnv snapshot.
         if ($SyncHash.TSEnvSettings) {
             Write-PSDWizardLog -Message "Populating TSEnv_ fields from TSEnvSettings hashtable" -Component $FunctionName
             $populatedCount = 0
-            
-            foreach ($key in $SyncHash.TSEnvSettings.Keys) {
-                # Look for control with name TSEnv_<key>
-                $controlName = "TSEnv_$key"
-                $control = $Window.FindName($controlName)
-                
-                if ($control) {
+
+            $tsEnvControls = @($SyncHash.UIElements.GetEnumerator() | Where-Object { $_.Key -like 'TSEnv_*' })
+            foreach ($entry in $tsEnvControls) {
+                $controlName = [string]$entry.Key
+                $key = $controlName.Substring('TSEnv_'.Length)
+
+                if ($SyncHash.TSEnvSettings.ContainsKey($key)) {
+                    $control = $entry.Value
                     $value = $SyncHash.TSEnvSettings[$key]
-                    
+
                     # Handle arrays (like IPAddress, DefaultGateway)
                     if ($value -is [array]) {
                         $value = $value -join ', '
                     }
-                    
+
                     # Expand variables in OSDComputerName (supports %SERIAL%, %RAND:n%, %MACADDRESS%, etc.)
                     if ($key -eq 'OSDComputerName' -and $value -match '%') {
                         $expandedValue = Expand-PSDWizardString -InputString $value
                         Write-PSDWizardLog -Message "Expanded OSDComputerName from '$value' to '$expandedValue'" -Component $FunctionName
                         $value = $expandedValue
                     }
-                    
+
                     # Set value based on control type
                     if ($control.GetType().Name -eq 'TextBox' -or $control.GetType().Name -eq 'TextBlock') {
                         $control.Text = $value
@@ -4437,36 +4437,36 @@ Function Initialize-PSDWizardData {
                     }
                 }
             }
-            
+
             Write-PSDWizardLog -Message "Populated $populatedCount TSEnv_ fields from TSEnvSettings" -Component $FunctionName
         }
         else {
             Write-PSDWizardLog -Message "No TSEnvSettings in SyncHash" -LogLevel 1 -Component $FunctionName
         }
-        
+
         # Add TextChanged event handlers to all TSEnv_ fields to sync changes back to TSEnvSettings
         if ($SyncHash.TSEnvSettings) {
             $tsenvFieldCount = 0
-            
+
             # Get all controls with names starting with TSEnv_
             $allControls = $Window | Get-Member -MemberType Property | Where-Object { $_.Name -match '^TSEnv_' }
-            
+
             foreach ($controlProperty in $allControls) {
                 $controlName = $controlProperty.Name
                 $control = $Window.$controlName
-                
+
                 if ($control -and $control.GetType().Name -eq 'TextBox') {
                     # Add TextChanged event to sync back to TSEnvSettings
                     $control.Add_TextChanged({
                         param($sender, $e)
                         $fieldName = $sender.Name -replace '^TSEnv_', ''
                         $newValue = $sender.Text
-                        
+
                         # Update SyncHash for development mode
                         if ($SyncHash.TSEnvSettings) {
                             $SyncHash.TSEnvSettings[$fieldName] = $newValue
                         }
-                        
+
                         # Also update actual TSEnv in production mode
                         try {
                             Set-PSDWizardTSEnvProperty -Name $fieldName -Value $newValue
@@ -4475,17 +4475,17 @@ Function Initialize-PSDWizardData {
                             # Silently continue if TSEnv not available (development mode)
                         }
                     })
-                    
+
                     $tsenvFieldCount++
                 }
             }
-            
+
             Write-PSDWizardLog -Message "Added TextChanged handlers to $tsenvFieldCount TSEnv_ TextBox fields" -Component $FunctionName
         }
-        
+
         # Add validation handlers for specific Device Details fields
         Write-PSDWizardLog -Message "Adding validation handlers for Device Details fields" -Component $FunctionName
-        
+
         # Define validation field mappings
         $validationFields = @(
             @{
@@ -4519,7 +4519,7 @@ Function Initialize-PSDWizardData {
                 UpdateNextButton = $false  # Admin accounts validation doesn't block navigation
             }
         )
-        
+
         # Wire up unified validation for each field using TextChanged + GotFocus (v2.3.6 approach)
         foreach ($field in $validationFields) {
             $control = $Window.FindName($field.ControlName)
@@ -4529,13 +4529,13 @@ Function Initialize-PSDWizardData {
                     ValidationCanvas = $field.ValidationCanvas
                     UpdateNextButton = $field.UpdateNextButton
                 }
-                
+
                 # GotFocus - validate when user enters the field
                 $control.Add_GotFocus({
                     param($sender, $e)
                     $wnd = [System.Windows.Window]::GetWindow($sender)
                     $fieldInfo = $sender.Tag
-                    
+
                     if ($fieldInfo -and $wnd) {
                         if ($fieldInfo.UpdateNextButton) {
                             Invoke-PSDWizardFieldValidation -Window $wnd -ControlName $sender.Name -ValidationCanvasName $fieldInfo.ValidationCanvas -UpdateNextButton
@@ -4543,14 +4543,14 @@ Function Initialize-PSDWizardData {
                         else {
                             Invoke-PSDWizardFieldValidation -Window $wnd -ControlName $sender.Name -ValidationCanvasName $fieldInfo.ValidationCanvas
                         }
-                        
+
                         # For domain-related fields, also trigger comprehensive domain validation
                         if ($sender.Name -match 'TSEnv_JoinDomain|TSEnv_DomainAdmin|TSEnv_DomainAdminDomain') {
                             [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeAsync([Action]{
                                 Confirm-PSDWizardDomainRequirements -Window $wnd -UpdateNextButton
                             }, [System.Windows.Threading.DispatcherPriority]::Background)
                         }
-                        
+
                         # Also add TextChanged handler dynamically (like v2.3.6)
                         $sender.AddHandler(
                             [System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent,
@@ -4558,7 +4558,7 @@ Function Initialize-PSDWizardData {
                                 param($s, $ev)
                                 $w = [System.Windows.Window]::GetWindow($s)
                                 $info = $s.Tag
-                                
+
                                 if ($info -and $w) {
                                     if ($info.UpdateNextButton) {
                                         Invoke-PSDWizardFieldValidation -Window $w -ControlName $s.Name -ValidationCanvasName $info.ValidationCanvas -UpdateNextButton
@@ -4566,7 +4566,7 @@ Function Initialize-PSDWizardData {
                                     else {
                                         Invoke-PSDWizardFieldValidation -Window $w -ControlName $s.Name -ValidationCanvasName $info.ValidationCanvas
                                     }
-                                    
+
                                     # For domain-related fields, also trigger comprehensive domain validation
                                     # This ensures ALL domain requirements are met before allowing navigation
                                     if ($s.Name -match 'TSEnv_JoinDomain|TSEnv_DomainAdmin|TSEnv_DomainAdminDomain') {
@@ -4580,11 +4580,11 @@ Function Initialize-PSDWizardData {
                         )
                     }
                 })
-                
+
                 Write-PSDWizardLog -Message "Added GotFocus/TextChanged validation handler for $($field.ControlName)" -Component $FunctionName
             }
         }
-        
+
         # Initialize validation canvases to hidden state
         $validationCanvases = @('_detTabValidation', '_detTabValidation2', '_tsTabValidation', '_admTabValidation')
         foreach ($canvasName in $validationCanvases) {
@@ -4594,14 +4594,14 @@ Function Initialize-PSDWizardData {
                 Write-PSDWizardLog -Message "Initialized $canvasName to hidden" -Component $FunctionName
             }
         }
-        
+
         # Run initial validation for pre-populated fields (KeyUp won't fire for existing data)
         Write-PSDWizardLog -Message "Running initial validation for pre-populated fields" -Component $FunctionName
         foreach ($field in $validationFields) {
             $control = $Window.FindName($field.ControlName)
             if ($control -and -not [string]::IsNullOrWhiteSpace($control.Text)) {
                 Write-PSDWizardLog -Message "Validating pre-populated field: $($field.ControlName)" -Component $FunctionName
-                
+
                 # Run validation
                 if ($field.UpdateNextButton) {
                     Invoke-PSDWizardFieldValidation -Window $Window -ControlName $field.ControlName -ValidationCanvasName $field.ValidationCanvas -UpdateNextButton
@@ -4611,7 +4611,7 @@ Function Initialize-PSDWizardData {
                 }
             }
         }
-        
+
         # Add OSDAddAdmin field validation
         $osdAddAdminControl = $Window.FindName('TSEnv_OSDAddAdmin')
         if ($osdAddAdminControl) {
@@ -4619,13 +4619,13 @@ Function Initialize-PSDWizardData {
             $osdAddAdminControl.IsEnabled = $true
             Write-PSDWizardLog -Message "Enabled TSEnv_OSDAddAdmin field for input" -Component $FunctionName
         }
-        
+
         # Add password matching validation for Admin Credentials page
         Write-PSDWizardLog -Message "Adding password matching validation handlers" -Component $FunctionName
         $passwordControl = $Window.FindName('TSEnv_AdminPassword')
         $confirmPasswordControl = $Window.FindName('_ConfirmAdminPassword')
         $validationOutput = $Window.FindName('_admTabValidation_Name')
-        
+
         if ($passwordControl -and $confirmPasswordControl -and $validationOutput) {
             # Create a scriptblock for password validation
             $passwordValidationHandler = {
@@ -4636,7 +4636,7 @@ Function Initialize-PSDWizardData {
                         $adminPasswordBox = $wnd.FindName('TSEnv_AdminPassword')
                         $confirmAdminPasswordBox = $wnd.FindName('_ConfirmAdminPassword')
                         $output = $wnd.FindName('_admTabValidation_Name')
-                        
+
                         if ($adminPasswordBox -and $confirmAdminPasswordBox -and $output) {
                             Confirm-PSDWizardPassword -PasswordObject $adminPasswordBox -ConfirmedPasswordObject $confirmAdminPasswordBox -OutputObject $output -UpdateNextButton
                         }
@@ -4646,7 +4646,7 @@ Function Initialize-PSDWizardData {
                     Write-PSDWizardLog -Message "Password validation event failed: $($_.Exception.Message)" -LogLevel 2 -Component 'AdminPassword_Event'
                 }
             }
-            
+
             # Wire up PasswordChanged event for both password fields
             $passwordControl.Add_PasswordChanged($passwordValidationHandler)
             $confirmPasswordControl.Add_PasswordChanged($passwordValidationHandler)
@@ -4660,37 +4660,37 @@ Function Initialize-PSDWizardData {
             }
             $passwordControl.Add_PreviewKeyDown($consumePasswordEnter)
             $confirmPasswordControl.Add_PreviewKeyDown($consumePasswordEnter)
-            
+
             Write-PSDWizardLog -Message "Added password matching validation for TSEnv_AdminPassword and _ConfirmAdminPassword" -Component $FunctionName
         }
         else {
             Write-PSDWizardLog -Message "Password controls not found - skipping password validation setup" -Component $FunctionName -loglevel 2
         }
-        
+
         # Find and populate Task Sequence control
         $tsControlNames = @('_tsTabTree', '_tsTabList', 'TSEnv_TaskSequence', '_lstTaskSequence')
         foreach ($controlName in $tsControlNames) {
             $tsControl = $Window.FindName($controlName)
             if ($tsControl -and $SyncHash.TaskSequences) {
                 Write-PSDWizardLog -Message "Found TS control: $controlName (Type: $($tsControl.GetType().Name))" -Component $FunctionName
-                
+
                 # Populate based on control type
                 if ($tsControl.GetType().Name -eq 'TreeView') {
                     $tsControl.ItemsSource = $null
                     $tsControl.Items.Clear()
-                    
+
                     # Build hierarchical structure if groups exist
                     if ($SyncHash.TaskSequenceGroups) {
                         # Get enabled groups (exclude hidden folder)
-                        $visibleGroups = @($SyncHash.TaskSequenceGroups | Where-Object { 
+                        $visibleGroups = @($SyncHash.TaskSequenceGroups | Where-Object {
                             $isEnabled = ($_.enable -eq 'True') -or ([string]::IsNullOrEmpty($_.enable))
                             $isNotHidden = $_.Name -ne 'hidden'
                             $isEnabled -and $isNotHidden
                         })
-                        
+
                         foreach ($group in $visibleGroups) {
                             $groupMembers = @($group.Member) | Where-Object { $_ }
-                            
+
                             # Add task sequences that belong to this group
                             foreach ($ts in $SyncHash.TaskSequences) {
                                 if ($ts.guid -in $groupMembers) {
@@ -4711,7 +4711,7 @@ Function Initialize-PSDWizardData {
                                             $tsControl.Items.Add($folderItem) | Out-Null
                                             $existingFolder = $folderItem
                                         }
-                                        
+
                                         # Add TS to folder
                                         $tsItem = New-Object System.Windows.Controls.TreeViewItem
                                         $tsItem.Header = "$($ts.Name) ($($ts.ID))"
@@ -4731,9 +4731,9 @@ Function Initialize-PSDWizardData {
                             $tsControl.Items.Add($treeItem) | Out-Null
                         }
                     }
-                    
+
                     Write-PSDWizardLog -Message "Populated $($tsControl.Items.Count) task sequence groups/items into TreeView $controlName" -Component $FunctionName
-                    
+
                     # Wire up selection changed event to update TSEnv_TaskSequenceID
                     $tsControl.Add_SelectedItemChanged({
                         param($s, $ev)
@@ -4746,31 +4746,31 @@ Function Initialize-PSDWizardData {
                                     $tsIdBox = $win.FindName('TSEnv_TaskSequenceID')
                                     $btnNext = $win.FindName('_wizNext')
                                     $tsValidation = $win.FindName('_tsTabValidation')
-                                    
+
                                     if ($tsIdBox) {
                                         $tsId = $selectedItem.Tag.ID
                                         $tsIdBox.Text = $tsId
-                                        
+
                                         # Also update SyncHash.TSEnvSettings
                                         if ($SyncHash.TSEnvSettings) {
                                             $SyncHash.TSEnvSettings['TaskSequenceID'] = $tsId
                                         }
-                                        
+
                                         Write-PSDWizardLog -Message "Selected TS: $tsId" -Component 'Initialize-PSDWizardData'
-                                        
+
                                         # Validate that the TS's assigned OS still exists
                                         $osGuid = Get-PSDWizardTSOSGUID -TaskSequenceID $tsId
                                         $isValid = $true
-                                        
+
                                         if (-not [string]::IsNullOrWhiteSpace($osGuid)) {
                                             # Check if OS exists in OperatingSystems list
                                             if ($SyncHash.OperatingSystems) {
                                                 $osExists = $SyncHash.OperatingSystems | Where-Object { $_.guid -eq $osGuid } | Select-Object -First 1
-                                                
+
                                                 if (-not $osExists) {
                                                     $isValid = $false
                                                     Write-PSDWizardLog -Message "TS '$tsId' references OS GUID '$osGuid' which was not found in OperatingSystems" -LogLevel 1 -Component 'Initialize-PSDWizardData'
-                                                    
+
                                                     # Show validation error
                                                     if ($tsValidation) {
                                                         $tsValidation.Visibility = [System.Windows.Visibility]::Visible
@@ -4786,7 +4786,7 @@ Function Initialize-PSDWizardData {
                                                 }
                                                 else {
                                                     Write-PSDWizardLog -Message \"TS '$tsId' has valid OS: $($osExists.Name) [$osGuid]\" -Component 'Initialize-PSDWizardData'
-                                                    
+
                                                     # Hide validation error
                                                     if ($tsValidation) {
                                                         $tsValidation.Visibility = [System.Windows.Visibility]::Hidden
@@ -4794,7 +4794,7 @@ Function Initialize-PSDWizardData {
                                                 }
                                             }
                                         }
-                                        
+
                                         # Enable/disable Next button based on validation
                                         if ($btnNext) {
                                             $btnNext.IsEnabled = $isValid
@@ -4814,21 +4814,21 @@ Function Initialize-PSDWizardData {
                         }
                     })
                     Write-PSDWizardLog -Message "Wired TSEnv_TaskSequenceID update event" -Component $FunctionName
-                    
+
                     # Expand all folders by default
                     foreach ($item in $tsControl.Items) {
                         if ($item.Items.Count -gt 0) {
                             $item.IsExpanded = $true
                         }
                     }
-                    
+
                     # Preselect TaskSequence based on TaskSequenceID from TSEnvSettings
                     if ($SyncHash.TSEnvSettings -and $SyncHash.TSEnvSettings.ContainsKey('TaskSequenceID')) {
                         $preselectedTSID = $SyncHash.TSEnvSettings['TaskSequenceID']
-                        
+
                         if (-not [string]::IsNullOrWhiteSpace($preselectedTSID)) {
                             Write-PSDWizardLog -Message "Attempting to preselect TaskSequence: $preselectedTSID" -Component $FunctionName
-                            
+
                             # Search for the task sequence in the tree
                             $found = $false
                             foreach ($item in $tsControl.Items) {
@@ -4853,7 +4853,7 @@ Function Initialize-PSDWizardData {
                                     if ($found) { break }
                                 }
                             }
-                            
+
                             if (-not $found) {
                                 Write-PSDWizardLog -Message "Could not find TaskSequence '$preselectedTSID' in TreeView for preselection" -LogLevel 1 -Component $FunctionName
                             }
@@ -4863,7 +4863,7 @@ Function Initialize-PSDWizardData {
                 elseif ($tsControl.GetType().Name -eq 'ListBox') {
                     $tsControl.ItemsSource = $null
                     $tsControl.Items.Clear()
-                    
+
                     foreach ($ts in $SyncHash.TaskSequences) {
                         $item = New-Object PSObject -Property @{
                             ID = $ts.ID
@@ -4872,21 +4872,21 @@ Function Initialize-PSDWizardData {
                         }
                         $tsControl.Items.Add($item) | Out-Null
                     }
-                    
+
                     Write-PSDWizardLog -Message "Populated $($tsControl.Items.Count) task sequences into ListBox $controlName" -Component $FunctionName
-                    
+
                     # Preselect TaskSequence based on TaskSequenceID from TSEnvSettings
                     if ($SyncHash.TSEnvSettings -and $SyncHash.TSEnvSettings.ContainsKey('TaskSequenceID')) {
                         $preselectedTSID = $SyncHash.TSEnvSettings['TaskSequenceID']
-                        
+
                         if (-not [string]::IsNullOrWhiteSpace($preselectedTSID)) {
                             # Find and select the matching item
                             $matchingTS = $tsControl.Items | Where-Object { $_.ID -eq $preselectedTSID }
-                            
+
                             if ($matchingTS) {
                                 $tsControl.SelectedItem = $matchingTS
                                 Write-PSDWizardLog -Message "Preselected TaskSequence '$preselectedTSID' in ListBox" -Component $FunctionName
-                                
+
                                 # Also update the TSEnv_TaskSequenceID field directly
                                 $tsIdField = $Window.FindName('TSEnv_TaskSequenceID')
                                 if ($tsIdField) {
@@ -4898,7 +4898,7 @@ Function Initialize-PSDWizardData {
                             }
                         }
                     }
-                    
+
                     # Wire up selection changed event for ListBox
                     $tsControl.Add_SelectionChanged({
                         param($s, $ev)
@@ -4911,29 +4911,29 @@ SelectedItem
                                     $tsIdBox = $win.FindName('TSEnv_TaskSequenceID')
                                     $btnNext = $win.FindName('_wizNext')
                                     $tsValidation = $win.FindName('_tsTabValidation')
-                                    
+
                                     if ($tsIdBox) {
                                         $tsId = $selectedItem.ID
                                         $tsIdBox.Text = $tsId
-                                        
+
                                         if ($SyncHash.TSEnvSettings) {
                                             $SyncHash.TSEnvSettings['TaskSequenceID'] = $tsId
                                         }
-                                        
+
                                         Write-PSDWizardLog -Message "Selected TS: $tsId" -Component 'Initialize-PSDWizardData'
-                                        
+
                                         # Validate that the TS's assigned OS still exists
                                         $osGuid = Get-PSDWizardTSOSGUID -TaskSequenceID $tsId
                                         $isValid = $true
-                                        
+
                                         if (-not [string]::IsNullOrWhiteSpace($osGuid)) {
                                             if ($SyncHash.OperatingSystems) {
                                                 $osExists = $SyncHash.OperatingSystems | Where-Object { $_.guid -eq $osGuid } | Select-Object -First 1
-                                                
+
                                                 if (-not $osExists) {
                                                     $isValid = $false
                                                     Write-PSDWizardLog -Message "TS '$tsId' references OS GUID '$osGuid' which was not found" -LogLevel 1 -Component 'Initialize-PSDWizardData'
-                                                    
+
                                                     if ($tsValidation) {
                                                         $tsValidation.Visibility = [System.Windows.Visibility]::Visible
                                                         $validationText = $tsValidation.FindName('_tsTabValidation_Name')
@@ -4948,7 +4948,7 @@ SelectedItem
                                                 }
                                             }
                                         }
-                                        
+
                                         # Enable/disable Next button
                                         if ($btnNext) {
                                             $btnNext.IsEnabled = $isValid
@@ -4974,19 +4974,19 @@ SelectedItem
                     }
                     $tsControl.ItemsSource = $tsData
                     Write-PSDWizardLog -Message "Populated $($tsData.Count) task sequences into DataGrid $controlName" -Component $FunctionName
-                    
+
                     # Preselect TaskSequence based on TaskSequenceID from TSEnvSettings
                     if ($SyncHash.TSEnvSettings -and $SyncHash.TSEnvSettings.ContainsKey('TaskSequenceID')) {
                         $preselectedTSID = $SyncHash.TSEnvSettings['TaskSequenceID']
-                        
+
                         if (-not [string]::IsNullOrWhiteSpace($preselectedTSID)) {
                             # Find and select the matching item
                             $matchingTS = $tsData | Where-Object { $_.ID -eq $preselectedTSID }
-                            
+
                             if ($matchingTS) {
                                 $tsControl.SelectedItem = $matchingTS
                                 Write-PSDWizardLog -Message "Preselected TaskSequence '$preselectedTSID' in DataGrid" -Component $FunctionName
-                                
+
                                 # Also update the TSEnv_TaskSequenceID field directly
                                 $tsIdField = $Window.FindName('TSEnv_TaskSequenceID')
                                 if ($tsIdField) {
@@ -4998,7 +4998,7 @@ SelectedItem
                             }
                         }
                     }
-                    
+
                     # Wire up selection changed event for DataGrid
                     $tsControl.Add_SelectionChanged({
                         param($s, $ev)
@@ -5010,29 +5010,29 @@ SelectedItem
                                     $tsIdBox = $win.FindName('TSEnv_TaskSequenceID')
                                     $btnNext = $win.FindName('_wizNext')
                                     $tsValidation = $win.FindName('_tsTabValidation')
-                                    
+
                                     if ($tsIdBox) {
                                         $tsId = $selectedItem.ID
                                         $tsIdBox.Text = $tsId
-                                        
+
                                         if ($SyncHash.TSEnvSettings) {
                                             $SyncHash.TSEnvSettings['TaskSequenceID'] = $tsId
                                         }
-                                        
+
                                         Write-PSDWizardLog -Message "Selected TS: $tsId" -Component 'Initialize-PSDWizardData'
-                                        
+
                                         # Validate that the TS's assigned OS still exists
                                         $osGuid = Get-PSDWizardTSOSGUID -TaskSequenceID $tsId
                                         $isValid = $true
-                                        
+
                                         if (-not [string]::IsNullOrWhiteSpace($osGuid)) {
                                             if ($SyncHash.OperatingSystems) {
                                                 $osExists = $SyncHash.OperatingSystems | Where-Object { $_.guid -eq $osGuid } | Select-Object -First 1
-                                                
+
                                                 if (-not $osExists) {
                                                     $isValid = $false
                                                     Write-PSDWizardLog -Message "TS '$tsId' references OS GUID '$osGuid' which was not found" -LogLevel 1 -Component 'Initialize-PSDWizardData'
-                                                    
+
                                                     if ($tsValidation) {
                                                         $tsValidation.Visibility = [System.Windows.Visibility]::Visible
                                                         $validationText = $tsValidation.FindName('_tsTabValidation_Name')
@@ -5047,7 +5047,7 @@ SelectedItem
                                                 }
                                             }
                                         }
-                                        
+
                                         # Enable/disable Next button
                                         if ($btnNext) {
                                             $btnNext.IsEnabled = $isValid
@@ -5063,18 +5063,18 @@ SelectedItem
                     })
                     Write-PSDWizardLog -Message "Wired DataGrid TSEnv_TaskSequenceID update event" -Component $FunctionName
                 }
-                
+
                 break
             }
         }
-        
+
         # Find and populate Applications control
         $appControlNames = @('_appTabList', '_appTabDatagrid', '_lstApplications', 'TSEnv_Applications', '_dgApplications')
         foreach ($controlName in $appControlNames) {
             $appControl = $Window.FindName($controlName)
             if ($appControl -and $SyncHash.Applications) {
                 Write-PSDWizardLog -Message "Found app control: $controlName (Type: $($appControl.GetType().Name))" -Component $FunctionName
-                
+
                 if ($appControl.GetType().Name -eq 'DataGrid') {
                     $appData = foreach ($app in $SyncHash.Applications) {
                         [PSCustomObject]@{
@@ -5087,12 +5087,12 @@ SelectedItem
                     }
                     $appControl.ItemsSource = $appData
                     Write-PSDWizardLog -Message "Populated $($appData.Count) applications into DataGrid $controlName" -Component $FunctionName
-                    
+
                     # Preselect applications based on Applications### from TSEnvSettings
                     if ($SyncHash.TSEnvSettings) {
                         $selectedAppGuids = @()
                         $mandatoryAppGuids = @()
-                        
+
                         # Get Applications### values (Applications001, Applications002, etc.)
                         $appKeys = $SyncHash.TSEnvSettings.Keys | Where-Object { $_ -match '^Applications\d{3}$' } | Sort-Object
                         foreach ($key in $appKeys) {
@@ -5101,7 +5101,7 @@ SelectedItem
                                 $selectedAppGuids += $guid
                             }
                         }
-                        
+
                         # Get MandatoryApplications### values
                         $mandatoryKeys = $SyncHash.TSEnvSettings.Keys | Where-Object { $_ -match '^MandatoryApplications\d{3}$' } | Sort-Object
                         foreach ($key in $mandatoryKeys) {
@@ -5113,43 +5113,43 @@ SelectedItem
                                 }
                             }
                         }
-                        
+
                         # Preselect applications in the DataGrid
                         if ($selectedAppGuids.Count -gt 0) {
                             $preselectedCount = 0
-                            
+
                             foreach ($item in $appData) {
                                 if ($item.guid -in $selectedAppGuids) {
                                     $appControl.SelectedItems.Add($item) | Out-Null
                                     $preselectedCount++
-                                    
+
                                     # Mark as mandatory if in mandatory list
                                     if ($item.guid -in $mandatoryAppGuids) {
                                         Add-Member -InputObject $item -NotePropertyName 'IsMandatory' -NotePropertyValue $true -Force
                                     }
-                                    
+
                                     Write-PSDWizardLog -Message "Preselected application: $($item.Name) (GUID: $($item.guid))" -Component $FunctionName
                                 }
                             }
-                            
+
                             Write-PSDWizardLog -Message "Preselected $preselectedCount applications (including $($mandatoryAppGuids.Count) mandatory)" -Component $FunctionName
                         }
-                        
+
                         # Add event handler to prevent deselection of mandatory applications
                         if ($mandatoryAppGuids.Count -gt 0) {
                             $appControl.Add_SelectionChanged({
                                 param($sender, $e)
-                                
+
                                 # Check if any mandatory apps were deselected
                                 $currentSelectedGuids = @($sender.SelectedItems | Select-Object -ExpandProperty guid)
-                                
+
                                 foreach ($item in $sender.ItemsSource) {
                                     # Check if item has IsMandatory property
                                     $isMandatory = $false
                                     if ($item.PSObject.Properties.Name -contains 'IsMandatory') {
                                         $isMandatory = $item.IsMandatory
                                     }
-                                    
+
                                     if ($isMandatory -and $item.guid -notin $currentSelectedGuids) {
                                         # Re-select the mandatory application
                                         $sender.SelectedItems.Add($item) | Out-Null
@@ -5157,7 +5157,7 @@ SelectedItem
                                     }
                                 }
                             })
-                            
+
                             Write-PSDWizardLog -Message "Added mandatory application protection for $($mandatoryAppGuids.Count) apps" -Component $FunctionName
                         }
 
@@ -5172,7 +5172,7 @@ SelectedItem
                 elseif ($appControl.GetType().Name -eq 'ListBox') {
                     $appControl.ItemsSource = $null
                     $appControl.Items.Clear()
-                    
+
                     foreach ($app in $SyncHash.Applications) {
                         $item = New-Object PSObject -Property @{
                             guid = $app.guid
@@ -5184,17 +5184,17 @@ SelectedItem
                         }
                         $appControl.Items.Add($item) | Out-Null
                     }
-                    
+
                     # Set DisplayMemberPath to show application name
                     $appControl.DisplayMemberPath = 'Name'
-                    
+
                     Write-PSDWizardLog -Message "Populated $($appControl.Items.Count) applications into ListBox $controlName" -Component $FunctionName
-                    
+
                     # Preselect applications based on Applications### from TSEnvSettings
                     if ($SyncHash.TSEnvSettings) {
                         $selectedAppGuids = @()
                         $mandatoryAppGuids = @()
-                        
+
                         # Get Applications### values (Applications001, Applications002, etc.)
                         $appKeys = $SyncHash.TSEnvSettings.Keys | Where-Object { $_ -match '^Applications\d{3}$' } | Sort-Object
                         foreach ($key in $appKeys) {
@@ -5203,7 +5203,7 @@ SelectedItem
                                 $selectedAppGuids += $guid
                             }
                         }
-                        
+
                         # Get MandatoryApplications### values (MandatoryApplications001, MandatoryApplications002, etc.)
                         $mandatoryKeys = $SyncHash.TSEnvSettings.Keys | Where-Object { $_ -match '^MandatoryApplications\d{3}$' } | Sort-Object
                         foreach ($key in $mandatoryKeys) {
@@ -5216,45 +5216,45 @@ SelectedItem
                                 }
                             }
                         }
-                        
+
                         # Preselect applications in the ListBox
                         if ($selectedAppGuids.Count -gt 0) {
                             $preselectedCount = 0
-                            
+
                             foreach ($item in $appControl.Items) {
                                 if ($item.guid -in $selectedAppGuids) {
                                     $appControl.SelectedItems.Add($item) | Out-Null
                                     $item.Selected = $true
                                     $preselectedCount++
-                                    
+
                                     # Mark as mandatory if in mandatory list
                                     if ($item.guid -in $mandatoryAppGuids) {
                                         # Store mandatory status in the item
                                         Add-Member -InputObject $item -NotePropertyName 'IsMandatory' -NotePropertyValue $true -Force
                                     }
-                                    
+
                                     Write-PSDWizardLog -Message "Preselected application: $($item.Name) (GUID: $($item.guid))" -Component $FunctionName
                                 }
                             }
-                            
+
                             Write-PSDWizardLog -Message "Preselected $preselectedCount applications (including $($mandatoryAppGuids.Count) mandatory)" -Component $FunctionName
                         }
-                        
+
                         # Add event handler to prevent deselection of mandatory applications
                         if ($mandatoryAppGuids.Count -gt 0) {
                             $appControl.Add_SelectionChanged({
                                 param($sender, $e)
-                                
+
                                 # Check if any mandatory apps were deselected
                                 $currentSelectedGuids = @($sender.SelectedItems | Select-Object -ExpandProperty guid)
-                                
+
                                 foreach ($item in $sender.Items) {
                                     # Check if item has IsMandatory property
                                     $isMandatory = $false
                                     if ($item.PSObject.Properties.Name -contains 'IsMandatory') {
                                         $isMandatory = $item.IsMandatory
                                     }
-                                    
+
                                     if ($isMandatory -and $item.guid -notin $currentSelectedGuids) {
                                         # Re-select the mandatory application
                                         $sender.SelectedItems.Add($item) | Out-Null
@@ -5262,7 +5262,7 @@ SelectedItem
                                     }
                                 }
                             })
-                            
+
                             Write-PSDWizardLog -Message "Added mandatory application protection for $($mandatoryAppGuids.Count) apps" -Component $FunctionName
                         }
 
@@ -5274,43 +5274,43 @@ SelectedItem
                         })
                     }
                 }
-                
+
                 break
             }
         }
-        
+
         # Dynamically populate all TSEnvList_* controls from TSEnvLists
         # This handles DeviceRole, IntuneGroup, DomainOUs, and any other list-based properties
         if ($SyncHash.TSEnvLists) {
             Write-PSDWizardLog -Message "Scanning for TSEnvList_* controls to populate dynamically..." -Component $FunctionName
-            
+
             # Get all named elements from the window
             $allControls = @()
             $allControls += $Window | Get-Member -MemberType Property | Where-Object { $_.Name -notmatch '^_' -and $_.Name -ne 'Resources' }
-            
+
             # Also scan FindName for controls matching pattern
             foreach ($listKey in $SyncHash.TSEnvLists.Keys) {
                 $controlName = "TSEnvList_$listKey"
                 $control = $Window.FindName($controlName)
-                
+
                 if ($control) {
                     $controlType = $control.GetType().Name
                     Write-PSDWizardLog -Message "Found control: $controlName (Type: $controlType)" -Component $FunctionName
-                    
+
                     if ($controlType -eq 'ComboBox' -or $controlType -eq 'ListBox') {
                         $control.ItemsSource = $null
                         $control.Items.Clear()
-                        
+
                         foreach ($item in $SyncHash.TSEnvLists[$listKey]) {
                             $control.Items.Add($item) | Out-Null
                         }
-                        
+
                         Write-PSDWizardLog -Message "Populated $($control.Items.Count) items into $controlType $controlName from TSEnvLists['$listKey']" -Component $FunctionName
-                        
+
                         # Add event handler to sync selection with TSEnv_ field
                         $tsenvFieldName = "TSEnv_$listKey"
                         $tsenvField = $Window.FindName($tsenvFieldName)
-                        
+
                         if ($controlType -eq 'ComboBox') {
                             $control.Add_SelectionChanged({
                                 param($sender, $e)
@@ -5318,15 +5318,15 @@ SelectedItem
                                 $fieldName = $sender.Name -replace '^TSEnvList_', ''
                                 $tsenvFieldName = "TSEnv_$fieldName"
                                 $targetField = [System.Windows.Window]::GetWindow($sender).FindName($tsenvFieldName)
-                                
+
                                 if ($targetField -and $selectedValue) {
                                     $targetField.Text = $selectedValue.ToString()
-                                    
+
                                     # Also update SyncHash.TSEnvSettings
                                     if ($SyncHash.TSEnvSettings) {
                                         $SyncHash.TSEnvSettings[$fieldName] = $selectedValue.ToString()
                                     }
-                                    
+
                                     Write-PSDWizardLog -Message "Synced $tsenvFieldName = $selectedValue" -Component 'Initialize-PSDWizardData'
                                 }
                             })
@@ -5339,33 +5339,33 @@ SelectedItem
                                 $fieldName = $sender.Name -replace '^TSEnvList_', ''
                                 $tsenvFieldName = "TSEnv_$fieldName"
                                 $targetField = [System.Windows.Window]::GetWindow($sender).FindName($tsenvFieldName)
-                                
+
                                 if ($targetField -and $selectedValue) {
                                     $targetField.Text = $selectedValue.ToString()
-                                    
+
                                     # Also update SyncHash.TSEnvSettings
                                     if ($SyncHash.TSEnvSettings) {
                                         $SyncHash.TSEnvSettings[$fieldName] = $selectedValue.ToString()
                                     }
-                                    
+
                                     Write-PSDWizardLog -Message "Synced $tsenvFieldName = $selectedValue" -Component 'Initialize-PSDWizardData'
                                 }
                             })
                             Write-PSDWizardLog -Message "Added SelectionChanged handler for $controlName -> $tsenvFieldName" -Component $FunctionName
                         }
-                        
+
                         # Preselect item if value exists in TSEnvSettings
                         if ($SyncHash.TSEnvSettings -and $SyncHash.TSEnvSettings.ContainsKey($listKey)) {
                             $preselectedValue = $SyncHash.TSEnvSettings[$listKey]
-                            
+
                             if (-not [string]::IsNullOrWhiteSpace($preselectedValue)) {
                                 # Find and select the matching item
                                 $matchingItem = $control.Items | Where-Object { $_.ToString() -eq $preselectedValue }
-                                
+
                                 if ($matchingItem) {
                                     $control.SelectedItem = $matchingItem
                                     Write-PSDWizardLog -Message "Preselected '$preselectedValue' in $controlName from TSEnvSettings" -Component $FunctionName
-                                    
+
                                     # Also update the TSEnv_ field directly
                                     if ($tsenvField) {
                                         $tsenvField.Text = $preselectedValue
@@ -5385,12 +5385,12 @@ SelectedItem
                         $control.ItemsSource = $gridData
                         Write-PSDWizardLog -Message "Populated $($gridData.Count) items into DataGrid $controlName from TSEnvLists['$listKey']" -Component $FunctionName
                     }
-                    
+
                     # Special handling for DomainOUs: Show dropdown if multiple, show textbox if 0 or 1
                     if ($listKey -eq 'DomainOUs') {
                         $ouTextBox = $Window.FindName('TSEnv_MachineObjectOU')
                         $ouCount = $control.Items.Count
-                        
+
                         if ($ouCount -gt 1) {
                             # Multiple OUs: Show dropdown, hide textbox
                             $control.Visibility = [System.Windows.Visibility]::Visible
@@ -5398,22 +5398,22 @@ SelectedItem
                                 $ouTextBox.Visibility = [System.Windows.Visibility]::Hidden
                             }
                             Write-PSDWizardLog -Message "Multiple OUs ($ouCount) found - showing dropdown, hiding textbox" -Component $FunctionName
-                            
+
                             # Add blank/empty option at the beginning (OU is optional)
                             $control.Items.Insert(0, "<Not specified>")
                             $control.SelectedIndex = 0
-                            
+
                             # Update event handler to handle blank selection
                             $control.Add_SelectionChanged({
                                 param($sender, $e)
                                 $selectedValue = $sender.SelectedItem
-                                
+
                                 if ($selectedValue -and $selectedValue -ne "<Not specified>") {
                                     $targetField = [System.Windows.Window]::GetWindow($sender).FindName('TSEnv_MachineObjectOU')
                                     if ($targetField) {
                                         $targetField.Text = $selectedValue.ToString()
                                     }
-                                    
+
                                     # Update SyncHash
                                     if ($script:PSDWizardSyncHash.TSEnvSettings) {
                                         $script:PSDWizardSyncHash.TSEnvSettings['MachineObjectOU'] = $selectedValue.ToString()
@@ -5440,7 +5440,7 @@ SelectedItem
                             $control.Visibility = [System.Windows.Visibility]::Hidden
                             if ($ouTextBox) {
                                 $ouTextBox.Visibility = [System.Windows.Visibility]::Visible
-                                
+
                                 # Pre-populate textbox if exactly 1 OU exists
                                 if ($ouCount -eq 1) {
                                     $ouTextBox.Text = $control.Items[0].ToString()
@@ -5453,13 +5453,13 @@ SelectedItem
                 }
             }
         }
-        
+
         # Dynamically populate locale and timezone controls (special case with object properties)
         # Supports both old naming (_locTabSystemLocale) and new dynamic naming (Locales_SystemLocale)
         if ($SyncHash.Locales) {
             # First, try to find controls with new dynamic naming pattern: Locales_*
             $localeControlsFound = @()
-            
+
             # Scan all controls for Locales_* pattern
             $allControlNames = $Window | Get-Member -MemberType Property | Where-Object { $_.Name -match '^Locales_' } | Select-Object -ExpandProperty Name
             foreach ($controlName in $allControlNames) {
@@ -5468,7 +5468,7 @@ SelectedItem
                     PropertyName = $controlName -replace '^Locales_', ''
                 }
             }
-            
+
             # Fall back to old hardcoded names if no dynamic controls found
             if ($localeControlsFound.Count -eq 0) {
                 $localeControlsFound = @(
@@ -5477,18 +5477,18 @@ SelectedItem
                     @{ ControlName = '_locTabLanguage'; PropertyName = 'UILanguage' }
                 )
             }
-            
+
             Write-PSDWizardLog -Message "Found $($localeControlsFound.Count) locale controls to populate" -Component $FunctionName
-            
+
             foreach ($controlInfo in $localeControlsFound) {
                 $controlName = $controlInfo.ControlName
                 $propertyName = $controlInfo.PropertyName
                 $localeControl = $Window.FindName($controlName)
-                
+
                 if ($localeControl -and $localeControl.GetType().Name -eq 'ComboBox') {
                     $localeControl.ItemsSource = $null
                     $localeControl.Items.Clear()
-                    
+
                     foreach ($locale in $SyncHash.Locales) {
                         $item = New-Object PSObject -Property @{
                             ID = $locale.ID
@@ -5501,20 +5501,20 @@ SelectedItem
                         }
                         $localeControl.Items.Add($item) | Out-Null
                     }
-                    
+
                     $localeControl.DisplayMemberPath = 'DisplayText'
                     $localeControl.SelectedValuePath = 'KeyboardLayout'
-                    
+
                     Write-PSDWizardLog -Message "Populated $($localeControl.Items.Count) locales into ComboBox $controlName" -Component $FunctionName
-                    
+
                     # Add SelectionChanged event handler to sync back to TSEnv
                     $localeControl.Add_SelectionChanged({
                         param($sender, $e)
-                        
+
                         $selectedLocale = $sender.SelectedItem
                         if ($selectedLocale) {
                             $controlName = $sender.Name
-                            
+
                             # Extract property name from control name dynamically
                             $tsenvPropertyName = if ($controlName -match '^Locales_(.+)$') {
                                 $matches[1]
@@ -5531,7 +5531,7 @@ SelectedItem
                             else {
                                 $null
                             }
-                            
+
                             if ($tsenvPropertyName) {
                                 # Determine which value property to use based on the TSEnv property name
                                 $valueToStore = switch ($tsenvPropertyName) {
@@ -5540,7 +5540,7 @@ SelectedItem
                                     'UILanguage' { $selectedLocale.Culture }
                                     default { $selectedLocale.Culture }
                                 }
-                                
+
                                 # Update the corresponding TSEnv_ TextBox field
                                 $win = [System.Windows.Window]::GetWindow($sender)
                                 if ($win) {
@@ -5549,12 +5549,12 @@ SelectedItem
                                         $tsenvField.Text = $valueToStore
                                     }
                                 }
-                                
+
                                 # Update SyncHash for development mode
                                 if ($SyncHash.TSEnvSettings) {
                                     $SyncHash.TSEnvSettings[$tsenvPropertyName] = $valueToStore
                                 }
-                                
+
                                 # Update actual TSEnv in production mode
                                 try {
                                     Set-PSDWizardTSEnvProperty -Name $tsenvPropertyName -Value $valueToStore
@@ -5566,46 +5566,46 @@ SelectedItem
                             }
                         }
                     })
-                    
+
                     # Preselect based on TSEnv value
                     if ($SyncHash.TSEnvSettings -and $SyncHash.TSEnvSettings.ContainsKey($propertyName)) {
                         $preselectedValue = $SyncHash.TSEnvSettings[$propertyName]
-                        
+
                         if (-not [string]::IsNullOrWhiteSpace($preselectedValue)) {
                             # Find matching item based on property type
                             $matchingItem = $null
-                            
+
                             switch ($propertyName) {
                                 'SystemLocale' {
                                     # Match by Culture or Name
-                                    $matchingItem = $localeControl.Items | Where-Object { 
-                                        $_.Culture -eq $preselectedValue -or $_.Name -eq $preselectedValue 
+                                    $matchingItem = $localeControl.Items | Where-Object {
+                                        $_.Culture -eq $preselectedValue -or $_.Name -eq $preselectedValue
                                     } | Select-Object -First 1
                                 }
                                 'KeyboardLocale' {
                                     # Match by KeyboardLayout
-                                    $matchingItem = $localeControl.Items | Where-Object { 
-                                        $_.KeyboardLayout -eq $preselectedValue 
+                                    $matchingItem = $localeControl.Items | Where-Object {
+                                        $_.KeyboardLayout -eq $preselectedValue
                                     } | Select-Object -First 1
                                 }
                                 { $_ -in 'UILanguage', 'Language' } {
                                     # Match by Culture or Language
-                                    $matchingItem = $localeControl.Items | Where-Object { 
-                                        $_.Culture -eq $preselectedValue -or $_.Language -eq $preselectedValue 
+                                    $matchingItem = $localeControl.Items | Where-Object {
+                                        $_.Culture -eq $preselectedValue -or $_.Language -eq $preselectedValue
                                     } | Select-Object -First 1
                                 }
                                 default {
                                     # Generic match by Culture
-                                    $matchingItem = $localeControl.Items | Where-Object { 
-                                        $_.Culture -eq $preselectedValue 
+                                    $matchingItem = $localeControl.Items | Where-Object {
+                                        $_.Culture -eq $preselectedValue
                                     } | Select-Object -First 1
                                 }
                             }
-                            
+
                             if ($matchingItem) {
                                 $localeControl.SelectedItem = $matchingItem
                                 Write-PSDWizardLog -Message "Preselected locale '$preselectedValue' in $controlName" -Component $FunctionName
-                                
+
                                 # Also update the TSEnv_ TextBox field
                                 $tsenvField = $Window.FindName("TSEnv_$propertyName")
                                 if ($tsenvField) {
@@ -5620,13 +5620,13 @@ SelectedItem
                 }
             }
         }
-        
+
         # Dynamically populate timezone controls (special case with object properties)
         # Supports both old naming (_locTabTimeZoneName) and new dynamic naming (TimeZoneIndex_TimeZoneName)
         if ($SyncHash.TimeZones) {
             # First, try to find controls with new dynamic naming pattern: TimeZoneIndex_*
             $timezoneControlsFound = @()
-            
+
             # Scan all controls for TimeZoneIndex_* pattern
             $allControlNames = $Window | Get-Member -MemberType Property | Where-Object { $_.Name -match '^TimeZoneIndex_' } | Select-Object -ExpandProperty Name
             foreach ($controlName in $allControlNames) {
@@ -5635,7 +5635,7 @@ SelectedItem
                     PropertyName = $controlName -replace '^TimeZoneIndex_', ''
                 }
             }
-            
+
             # Fall back to old hardcoded names if no dynamic controls found
             if ($timezoneControlsFound.Count -eq 0) {
                 $timezoneControlsFound = @(
@@ -5643,18 +5643,18 @@ SelectedItem
                     @{ ControlName = '_locTabTimeZone'; PropertyName = 'TimeZone' }
                 )
             }
-            
+
             Write-PSDWizardLog -Message "Found $($timezoneControlsFound.Count) timezone controls to populate" -Component $FunctionName
-            
+
             foreach ($controlInfo in $timezoneControlsFound) {
                 $controlName = $controlInfo.ControlName
                 $propertyName = $controlInfo.PropertyName
                 $timezoneControl = $Window.FindName($controlName)
-                
+
                 if ($timezoneControl -and $timezoneControl.GetType().Name -eq 'ComboBox') {
                     $timezoneControl.ItemsSource = $null
                     $timezoneControl.Items.Clear()
-                    
+
                     foreach ($tz in $SyncHash.TimeZones) {
                         $item = New-Object PSObject -Property @{
                             id = $tz.id
@@ -5666,20 +5666,20 @@ SelectedItem
                         }
                         $timezoneControl.Items.Add($item) | Out-Null
                     }
-                    
+
                     $timezoneControl.DisplayMemberPath = 'DisplayText'
                     $timezoneControl.SelectedValuePath = 'id'
-                    
+
                     Write-PSDWizardLog -Message "Populated $($timezoneControl.Items.Count) timezones into ComboBox $controlName" -Component $FunctionName
-                    
+
                     # Add SelectionChanged event handler to sync back to TSEnv
                     $timezoneControl.Add_SelectionChanged({
                         param($sender, $e)
-                        
+
                         $selectedTimezone = $sender.SelectedItem
                         if ($selectedTimezone) {
                             $controlName = $sender.Name
-                            
+
                             # Extract property name from control name dynamically
                             $tsenvPropertyName = if ($controlName -match '^TimeZoneIndex_(.+)$') {
                                 $matches[1]
@@ -5691,10 +5691,10 @@ SelectedItem
                             else {
                                 'TimeZoneName'  # Default fallback
                             }
-                            
+
                             # TimeZoneName property stores the timezone display name
                             $valueToStore = $selectedTimezone.TimeZone
-                            
+
                             # Update the corresponding TSEnv_ TextBox field
                             $win = [System.Windows.Window]::GetWindow($sender)
                             if ($win) {
@@ -5703,12 +5703,12 @@ SelectedItem
                                     $tsenvField.Text = $valueToStore
                                 }
                             }
-                            
+
                             # Update SyncHash for development mode
                             if ($SyncHash.TSEnvSettings) {
                                 $SyncHash.TSEnvSettings[$tsenvPropertyName] = $valueToStore
                             }
-                            
+
                             # Update actual TSEnv in production mode
                             try {
                                 Set-PSDWizardTSEnvProperty -Name $tsenvPropertyName -Value $valueToStore
@@ -5719,21 +5719,21 @@ SelectedItem
                             }
                         }
                     })
-                    
+
                     # Preselect based on TSEnv value
                     if ($SyncHash.TSEnvSettings -and $SyncHash.TSEnvSettings.ContainsKey($propertyName)) {
                         $preselectedValue = $SyncHash.TSEnvSettings[$propertyName]
-                        
+
                         if (-not [string]::IsNullOrWhiteSpace($preselectedValue)) {
                             # Find matching timezone by TimeZone or DisplayName
-                            $matchingTimezone = $timezoneControl.Items | Where-Object { 
+                            $matchingTimezone = $timezoneControl.Items | Where-Object {
                                 $_.TimeZone -eq $preselectedValue -or $_.DisplayName -eq $preselectedValue -or $_.Name -eq $preselectedValue
                             } | Select-Object -First 1
-                            
+
                             if ($matchingTimezone) {
                                 $timezoneControl.SelectedItem = $matchingTimezone
                                 Write-PSDWizardLog -Message "Preselected timezone '$preselectedValue' in $controlName" -Component $FunctionName
-                                
+
                                 # Also update the TSEnv_ TextBox field
                                 $tsenvField = $Window.FindName("TSEnv_$propertyName")
                                 if ($tsenvField) {
@@ -5748,7 +5748,7 @@ SelectedItem
                 }
             }
         }
-        
+
         #region TargetDisk Page Population
         # Check if TargetDisk page exists
         $diskControls = @('_lstDisks', '_lstVolumes', '_cmbTargetDisk', 'TSEnv_OSDDiskIndex')
@@ -5762,7 +5762,7 @@ SelectedItem
 
         if ($hasTargetDiskPage) {
             Write-PSDWizardLog -Message "Initializing TargetDisk page controls..." -Component $FunctionName
-            
+
             # Collect disk information
             # Each collection uses its own try/catch so a failure enumerating partitions/volumes
             # (e.g. an unpartitioned/raw target disk, which is common before OS deployment) does
@@ -5801,7 +5801,7 @@ SelectedItem
             }
 
             Write-PSDWizardLog -Message "Found $($SyncHash.Disks.Count) disks, $($SyncHash.Volumes.Count) volumes" -Component $FunctionName
-            
+
             # Populate _lstDisks ListView
             $lstDisks = $Window.FindName('_lstDisks')
             if ($lstDisks -and $SyncHash.Disks) {
@@ -5819,7 +5819,7 @@ SelectedItem
                         @{Name="Size"; Expression={
                             ([math]::round($_.Size / 1GB, 2)).ToString() + ' GB'
                         }})
-                    
+
                     $lstDisks.ItemsSource = $diskData
                     Write-PSDWizardLog -Message "Populated _lstDisks with $($diskData.Count) disks" -Component $FunctionName
                 }
@@ -5827,12 +5827,12 @@ SelectedItem
                     Write-PSDWizardLog -Message "Error populating _lstDisks: $($_.Exception.Message)" -LogLevel 2 -Component $FunctionName
                 }
             }
-            
+
             # Populate _lstVolumes ListView
             $lstVolumes = $Window.FindName('_lstVolumes')
             if ($lstVolumes -and $SyncHash.Volumes) {
                 try {
-                    $volumeData = @($SyncHash.Volumes | Sort-Object DriveLetter | 
+                    $volumeData = @($SyncHash.Volumes | Sort-Object DriveLetter |
                         Select-Object DriveLetter, FileSystemLabel, FileSystem, DriveType,
                             @{Name="Disk"; Expression={
                                 $volDriveLetter = $_.DriveLetter
@@ -5844,7 +5844,7 @@ SelectedItem
                             @{Name="SizeRemaining"; Expression={
                                 ([math]::round($_.SizeRemaining / 1GB, 2)).ToString() + ' GB'
                                 }})
-                    
+
                     $lstVolumes.ItemsSource = $volumeData
                     Write-PSDWizardLog -Message "Populated _lstVolumes with $($volumeData.Count) volumes" -Component $FunctionName
                 }
@@ -5852,30 +5852,30 @@ SelectedItem
                     Write-PSDWizardLog -Message "Error populating _lstVolumes: $($_.Exception.Message)" -LogLevel 2 -Component $FunctionName
                 }
             }
-            
+
             # Populate _cmbTargetDisk ComboBox
             $cmbTargetDisk = $Window.FindName('_cmbTargetDisk')
             if ($cmbTargetDisk -and $SyncHash.Disks) {
                 try {
                     # Clear existing items
                     $cmbTargetDisk.Items.Clear()
-                    
+
                     # Add disk numbers to ComboBox
                     foreach ($disk in $SyncHash.Disks) {
                         $cmbTargetDisk.Items.Add($disk.Number) | Out-Null
                     }
-                    
+
                     Write-PSDWizardLog -Message "Populated _cmbTargetDisk with $($cmbTargetDisk.Items.Count) disk indices" -Component $FunctionName
-                    
+
                     # Preselect based on TSEnvSettings OSDDiskIndex
                     if ($SyncHash.TSEnvSettings -and $SyncHash.TSEnvSettings.ContainsKey('OSDDiskIndex')) {
                         $preselectedDiskIndex = $SyncHash.TSEnvSettings['OSDDiskIndex']
-                        
+
                         if (-not [string]::IsNullOrWhiteSpace($preselectedDiskIndex)) {
                             # Convert to int
                             try {
                                 $diskIndex = [int]$preselectedDiskIndex
-                                
+
                                 if ($diskIndex -in $SyncHash.Disks.Number) {
                                     $cmbTargetDisk.SelectedItem = $diskIndex
                                     Write-PSDWizardLog -Message "Preselected disk index $diskIndex in _cmbTargetDisk" -Component $FunctionName
@@ -5906,101 +5906,101 @@ SelectedItem
                     Write-PSDWizardLog -Message "Error populating _cmbTargetDisk: $($_.Exception.Message)" -LogLevel 2 -Component $FunctionName
                 }
             }
-            
+
             # Add event handlers
-            
+
             # _cmbTargetDisk SelectionChanged event
             if ($cmbTargetDisk) {
                 $cmbTargetDisk.Add_SelectionChanged({
                     param($sender, $e)
-                    
+
                     $selectedDiskIndex = $sender.SelectedItem
-                    
+
                     if ($null -ne $selectedDiskIndex) {
                         # Get Window reference
                         $win = [System.Windows.Window]::GetWindow($sender)
-                        
+
                         # Update TSEnv_OSDDiskIndex TextBox
                         $tsOSDDiskIndex = $win.FindName('TSEnv_OSDDiskIndex')
                         if ($tsOSDDiskIndex) {
                             $tsOSDDiskIndex.Text = $selectedDiskIndex.ToString()
                         }
-                        
+
                         # Update SyncHash.TSEnvSettings
                         if ($SyncHash.TSEnvSettings) {
                             $SyncHash.TSEnvSettings['OSDDiskIndex'] = $selectedDiskIndex.ToString()
                         }
-                        
+
                         Write-PSDWizardLog -Message "Selected disk index: $selectedDiskIndex" -Component 'TargetDisk_Event'
                     }
                 })
-                
+
                 Write-PSDWizardLog -Message "Added SelectionChanged event handler to _cmbTargetDisk" -Component $FunctionName
             }
-            
+
             # _lstDisks SelectionChanged event
             if ($lstDisks) {
                 $lstDisks.Add_SelectionChanged({
                     param($sender, $e)
-                    
+
                     if ($sender.SelectedItem) {
                         $selectedDisk = $sender.SelectedItem
                         $diskNumber = $selectedDisk.Number
-                        
+
                         # Get Window reference
                         $win = [System.Windows.Window]::GetWindow($sender)
-                        
+
                         # Update ComboBox
                         $cmbTargetDisk = $win.FindName('_cmbTargetDisk')
                         if ($cmbTargetDisk) {
                             $cmbTargetDisk.SelectedItem = $diskNumber
                         }
-                        
+
                         # Update TSEnv_OSDDiskIndex TextBox
                         $tsOSDDiskIndex = $win.FindName('TSEnv_OSDDiskIndex')
                         if ($tsOSDDiskIndex) {
                             $tsOSDDiskIndex.Text = $diskNumber.ToString()
                         }
-                        
+
                         # Clear volume selection
                         $lstVolumes = $win.FindName('_lstVolumes')
                         if ($lstVolumes) {
                             $lstVolumes.SelectedItem = $null
                         }
-                        
+
                         # Clear pie chart
                         $imgPieChart = $win.FindName('_imgPieChart')
                         if ($imgPieChart) {
                             $imgPieChart.Source = $null
                         }
-                        
+
                         Write-PSDWizardLog -Message "Disk $diskNumber selected from ListView" -Component 'TargetDisk_Event'
                     }
                 })
-                
+
                 Write-PSDWizardLog -Message "Added SelectionChanged event handler to _lstDisks" -Component $FunctionName
             }
-            
+
             # _lstVolumes SelectionChanged event (with pie chart generation)
             if ($lstVolumes) {
                 $lstVolumes.Add_SelectionChanged({
                     param($sender, $e)
-                    
+
                     if ($sender.SelectedItem) {
                         $selectedVolume = $sender.SelectedItem
                         $driveLetter = $selectedVolume.DriveLetter
-                        
+
                         Write-PSDWizardLog -Message "Volume $driveLetter selected from ListView" -Component 'TargetDisk_Event'
-                        
+
                         # Get volume details for pie chart
                         try {
                             $vol = $SyncHash.Volumes | Where-Object { $_.DriveLetter -eq $driveLetter } | Select-Object -First 1
-                            
+
                             if ($vol) {
                                 # Ensure numeric values (handle potential arrays)
                                 $volSize = if ($vol.Size -is [array]) { $vol.Size[0] } else { $vol.Size }
                                 $volSizeRemaining = if ($vol.SizeRemaining -is [array]) { $vol.SizeRemaining[0] } else { $vol.SizeRemaining }
-                                
+
                                 # Validate we have valid numbers
                                 if ($null -ne $volSize -and $null -ne $volSizeRemaining -and $volSize -gt 0) {
                                     # Create hash table for volume data
@@ -6014,51 +6014,51 @@ SelectedItem
                                             Value = [math]::Round((($volSize - $volSizeRemaining) / 1GB), 2)
                                         }
                                     }
-                                    
+
                                     # Generate pie chart
                                     Add-Type -AssemblyName System.Windows.Forms, System.Windows.Forms.DataVisualization
-                                
+
                                 $chart = New-Object System.Windows.Forms.DataVisualization.Charting.Chart
                                 $chart.Width = 200
                                 $chart.Height = 160
                                 $chart.Left = 0
                                 $chart.Top = 0
-                                
+
                                 $chartArea = New-Object System.Windows.Forms.DataVisualization.Charting.ChartArea
                                 $chart.ChartAreas.Add($chartArea)
                                 [void]$chart.Series.Add("Data")
-                                
+
                                 # Add data points
                                 $volDataSet.GetEnumerator() | ForEach-Object {
                                     $datapoint = New-Object System.Windows.Forms.DataVisualization.Charting.DataPoint(0, $_.Value.Value)
                                     $datapoint.AxisLabel = "$($_.Value.Header) ($($_.Value.Value) GB)"
                                     $chart.Series["Data"].Points.Add($datapoint)
                                 }
-                                
+
                                 $chart.Series["Data"].ChartType = [System.Windows.Forms.DataVisualization.Charting.SeriesChartType]::Pie
                                 $chart.Series["Data"]["PieLabelStyle"] = "Outside"
                                 $chart.Series["Data"]["PieLineColor"] = "Black"
                                 $chart.Series["Data"]["PieDrawingStyle"] = "Concave"
                                 ($chart.Series["Data"].Points.FindMaxByValue())["Exploded"] = $true
-                                
+
                                 # Set title
                                 $title = New-Object System.Windows.Forms.DataVisualization.Charting.Title
                                 $chart.Titles.Add($title)
                                 $chart.Titles[0].Text = "Volume Usage for: $driveLetter"
-                                
+
                                 # Save chart as image
                                 $chartFile = Join-Path $env:Temp "${driveLetter}_$(Get-Date -Format 'yyyyMMdd_HHmmss').png"
                                 $chart.SaveImage($chartFile, "PNG")
-                                
+
                                 # Display in UI
                                 $win = [System.Windows.Window]::GetWindow($sender)
                                 $imgPieChart = $win.FindName('_imgPieChart')
                                 if ($imgPieChart) {
                                     $imgPieChart.Source = $chartFile
                                 }
-                                
+
                                 $chart.Dispose()
-                                
+
                                 Write-PSDWizardLog -Message "Generated pie chart for volume $driveLetter at: $chartFile" -Component 'TargetDisk_Event'
                                 }
                                 else {
@@ -6074,27 +6074,27 @@ SelectedItem
                         }
                     }
                 })
-                
+
                 Write-PSDWizardLog -Message "Added SelectionChanged event handler to _lstVolumes (with pie chart)" -Component $FunctionName
             }
-            
+
             # TSEnv_OSDDiskIndex TextChanged event
             $tsOSDDiskIndex = $Window.FindName('TSEnv_OSDDiskIndex')
             if ($tsOSDDiskIndex) {
                 $tsOSDDiskIndex.Add_TextChanged({
                     param($sender, $e)
-                    
+
                     # Get Window reference
                     $win = [System.Windows.Window]::GetWindow($sender)
                     $wizNext = $win.FindName('_wizNext')
-                    
+
                     if ($wizNext) {
                         $diskIndexText = $sender.Text
-                        
+
                         if (-not [string]::IsNullOrWhiteSpace($diskIndexText)) {
                             try {
                                 $diskIndex = [int]$diskIndexText
-                                
+
                                 if ($diskIndex -in $SyncHash.Disks.Number) {
                                     $wizNext.IsEnabled = $true
                                     Write-PSDWizardLog -Message "Valid disk index $diskIndex entered, Next button enabled" -Component 'TargetDisk_Event'
@@ -6114,41 +6114,41 @@ SelectedItem
                         }
                     }
                 })
-                
+
                 Write-PSDWizardLog -Message "Added TextChanged event handler to TSEnv_OSDDiskIndex" -Component $FunctionName
             }
         }
         #endregion TargetDisk Page Population
-        
+
         # Dynamically populate TSEnv ListView on Ready/Summary page with all TSEnv properties
         $tsenvListView = $Window.FindName('TSEnv')
         if ($tsenvListView) {
             Write-PSDWizardLog -Message "Found TSEnv ListView control for Summary page" -Component $FunctionName
-            
+
             # Clear any existing items (just set ItemsSource to null, don't call .Items.Clear())
             $tsenvListView.ItemsSource = $null
-            
+
             # Collect all TSEnv properties
             $tsenvSummaryData = @()
-            
+
             if ($SyncHash.TSEnvSettings) {
                 # Get all TSEnv properties and sort by name
                 $sortedProperties = $SyncHash.TSEnvSettings.GetEnumerator() | Sort-Object Name
-                
+
                 foreach ($property in $sortedProperties) {
                     $name = $property.Key
                     $value = $property.Value
-                    
+
                     # Format array values nicely
                     if ($value -is [array]) {
                         $value = $value -join ', '
                     }
-                    
+
                     # Handle null/empty values
                     if ([string]::IsNullOrWhiteSpace($value)) {
                         $value = '<empty>'
                     }
-                    
+
                     # Special handling for Applications - show names instead of GUIDs
                     if ($name -match '^(Applications|MandatoryApplications)\d{3}$' -and $SyncHash.Applications) {
                         # Look up the application name from GUID
@@ -6158,17 +6158,17 @@ SelectedItem
                             $value = "$($app.Name) [$appGuid]"
                         }
                     }
-                    
+
                     # Add to summary data
                     $tsenvSummaryData += [PSCustomObject]@{
                         Name = $name
                         Value = $value
                     }
                 }
-                
+
                 # Set the ItemsSource to populate the ListView
                 $tsenvListView.ItemsSource = $tsenvSummaryData
-                
+
                 Write-PSDWizardLog -Message "Populated $($tsenvSummaryData.Count) TSEnv properties into Summary ListView" -Component $FunctionName
             }
             else {
@@ -6178,72 +6178,72 @@ SelectedItem
         else {
             Write-PSDWizardLog -Message "TSEnv ListView not found (Summary page may not be included in this theme)" -LogLevel 1 -Component $FunctionName
         }
-        
+
         #region RADIO BUTTON HANDLERS (Domain/Workgroup Selection)
-        
+
         # Check if Domain/Workgroup radio buttons exist in the current theme
         $radJoinDomain = $Window.FindName('_JoinDomainRadio')
         $radJoinWorkgroup = $Window.FindName('_JoinWorkgroupRadio')
-        
+
         if ($radJoinDomain -and $radJoinWorkgroup) {
             Write-PSDWizardLog -Message "Setting up Domain/Workgroup radio button handlers" -Component $FunctionName
-            
+
             # Save original values from TSEnv (these will be restored when switching between options)
             $script:SavedJoinDomain = Get-PSDWizardTSEnvProperty 'JoinDomain' -ValueOnly
             $script:SavedJoinWorkgroup = Get-PSDWizardTSEnvProperty 'JoinWorkgroup' -ValueOnly
-            
+
             Write-PSDWizardLog -Message "Saved original Domain: [$script:SavedJoinDomain], Workgroup: [$script:SavedJoinWorkgroup]" -Component $FunctionName
-            
+
             # Find the grid containers that show/hide domain vs workgroup fields
             $grdJoinDomain = $Window.FindName('_grdJoinDomain')
             $grdJoinWorkgroup = $Window.FindName('_grdJoinWorkgroup')
-            
+
             # Find the textbox controls for domain and workgroup
             $txtJoinDomain = $Window.FindName('TSEnv_JoinDomain')
             $txtJoinWorkgroup = $Window.FindName('TSEnv_JoinWorkgroup')
-            
+
             # Set initial visibility: Hide both grids first (they'll be shown by event handlers)
-            if ($grdJoinDomain) { 
-                $grdJoinDomain.Visibility = [System.Windows.Visibility]::Collapsed 
+            if ($grdJoinDomain) {
+                $grdJoinDomain.Visibility = [System.Windows.Visibility]::Collapsed
                 Write-PSDWizardLog -Message "Initially collapsed Domain grid" -Component $FunctionName
             }
-            if ($grdJoinWorkgroup) { 
-                $grdJoinWorkgroup.Visibility = [System.Windows.Visibility]::Collapsed 
+            if ($grdJoinWorkgroup) {
+                $grdJoinWorkgroup.Visibility = [System.Windows.Visibility]::Collapsed
                 Write-PSDWizardLog -Message "Initially collapsed Workgroup grid" -Component $FunctionName
             }
-            
+
             # Find the Next button (may be null if not available yet, but we can try)
             $btnNext = $Window.FindName('_wizNext')
-            
+
             # Event handler: When Domain radio is checked
             $radJoinDomain.Add_Checked({
                 Write-PSDWizardLog -Message "Domain radio checked - switching to domain join mode" -Component 'Initialize-PSDWizardData'
-                
+
                 # Find controls inside scriptblock (closure scope issue)
                 $wnd = $script:PSDWizardSyncHash.Window
                 $txtDomain = $wnd.FindName('TSEnv_JoinDomain')
                 $txtWG = $wnd.FindName('TSEnv_JoinWorkgroup')
                 $grdDomain = $wnd.FindName('_grdJoinDomain')
                 $grdWG = $wnd.FindName('_grdJoinWorkgroup')
-                
+
                 # Clear workgroup value
                 if ($txtWG) {
                     $txtWG.Text = $null
                     Set-PSDWizardTSEnvProperty -Name 'JoinWorkgroup' -Value $null
                 }
-                
+
                 # Clear validation canvas (since we're switching modes)
                 $validationCanvas = $wnd.FindName('_detTabValidation2')
                 if ($validationCanvas) {
                     $validationCanvas.Visibility = "Hidden"
                 }
-                
+
                 # Restore saved domain value
                 if ($txtDomain -and -not [string]::IsNullOrWhiteSpace($script:SavedJoinDomain)) {
                     $txtDomain.Text = $script:SavedJoinDomain
                     Set-PSDWizardTSEnvProperty -Name 'JoinDomain' -Value $script:SavedJoinDomain
                 }
-                
+
                 # Show domain grid, hide workgroup grid
                 if ($grdDomain) {
                     $grdDomain.Visibility = [System.Windows.Visibility]::Visible
@@ -6253,45 +6253,45 @@ SelectedItem
                     $grdWG.Visibility = [System.Windows.Visibility]::Collapsed
                     Write-PSDWizardLog -Message "Workgroup grid set to Collapsed" -Component 'Initialize-PSDWizardData'
                 }
-                
+
                 # Trigger validation for domain field if it has content (shows per-field validation message)
                 if ($txtDomain -and -not [string]::IsNullOrWhiteSpace($txtDomain.Text)) {
                     Invoke-PSDWizardFieldValidation -Window $wnd -ControlName 'TSEnv_JoinDomain' -ValidationCanvasName '_detTabValidation2_Name'
                 }
-                
+
                 # Trigger comprehensive domain requirements validation (controls Next button)
                 Confirm-PSDWizardDomainRequirements -Window $wnd -UpdateNextButton
             })
-            
+
             # Event handler: When Workgroup radio is checked
             $radJoinWorkgroup.Add_Checked({
                 Write-PSDWizardLog -Message "Workgroup radio checked - switching to workgroup mode" -Component 'Initialize-PSDWizardData'
-                
+
                 # Find controls inside scriptblock (closure scope issue)
                 $wnd = $script:PSDWizardSyncHash.Window
                 $txtDomain = $wnd.FindName('TSEnv_JoinDomain')
                 $txtWG = $wnd.FindName('TSEnv_JoinWorkgroup')
                 $grdDomain = $wnd.FindName('_grdJoinDomain')
                 $grdWG = $wnd.FindName('_grdJoinWorkgroup')
-                
+
                 # Clear domain value
                 if ($txtDomain) {
                     $txtDomain.Text = $null
                     Set-PSDWizardTSEnvProperty -Name 'JoinDomain' -Value $null
                 }
-                
+
                 # Clear validation canvas (since we're switching modes)
                 $validationCanvas = $wnd.FindName('_detTabValidation2')
                 if ($validationCanvas) {
                     $validationCanvas.Visibility = "Hidden"
                 }
-                
+
                 # Restore saved workgroup value
                 if ($txtWG -and -not [string]::IsNullOrWhiteSpace($script:SavedJoinWorkgroup)) {
                     $txtWG.Text = $script:SavedJoinWorkgroup
                     Set-PSDWizardTSEnvProperty -Name 'JoinWorkgroup' -Value $script:SavedJoinWorkgroup
                 }
-                
+
                 # Hide domain grid, show workgroup grid
                 if ($grdDomain) {
                     $grdDomain.Visibility = [System.Windows.Visibility]::Collapsed
@@ -6301,105 +6301,105 @@ SelectedItem
                     $grdWG.Visibility = [System.Windows.Visibility]::Visible
                     Write-PSDWizardLog -Message "Workgroup grid set to Visible" -Component 'Initialize-PSDWizardData'
                 }
-                
+
                 # Re-enable Next button (domain validation may have disabled it)
                 # Workgroup validation will control it from here
                 $nextButton = $wnd.FindName('_wizNext')
                 if ($nextButton) {
                     $nextButton.IsEnabled = $true
                 }
-                
+
                 # Trigger validation for workgroup field if it has content
                 if ($txtWG -and -not [string]::IsNullOrWhiteSpace($txtWG.Text)) {
                     Invoke-PSDWizardFieldValidation -Window $wnd -ControlName 'TSEnv_JoinWorkgroup' -ValidationCanvasName '_detTabValidation2_Name' -UpdateNextButton
                 }
             })
-            
+
             # Determine initial state: Pre-select the appropriate radio button
             # Priority: Domain takes precedence over Workgroup if both are set
             if (-not [string]::IsNullOrWhiteSpace($script:SavedJoinDomain)) {
                 Write-PSDWizardLog -Message "Pre-selecting Domain radio (JoinDomain='$script:SavedJoinDomain')" -Component $FunctionName
-                
+
                 # Manually trigger visibility update (event handler may not fire when setting programmatically)
-                if ($txtJoinDomain) { 
+                if ($txtJoinDomain) {
                     $txtJoinDomain.Text = $script:SavedJoinDomain
                     Set-PSDWizardTSEnvProperty -Name 'JoinDomain' -Value $script:SavedJoinDomain
                     Write-PSDWizardLog -Message "Set domain textbox to: $($script:SavedJoinDomain)" -Component $FunctionName
                 }
-                if ($grdJoinDomain) { 
+                if ($grdJoinDomain) {
                     $grdJoinDomain.Visibility = [System.Windows.Visibility]::Visible
                     Write-PSDWizardLog -Message "Manually set Domain grid to Visible (IsVisible=$($grdJoinDomain.IsVisible))" -Component $FunctionName
                 }
-                if ($grdJoinWorkgroup) { 
+                if ($grdJoinWorkgroup) {
                     $grdJoinWorkgroup.Visibility = [System.Windows.Visibility]::Collapsed
                     Write-PSDWizardLog -Message "Manually set Workgroup grid to Collapsed" -Component $FunctionName
                 }
-                
+
                 $radJoinDomain.IsChecked = $true
             }
             elseif (-not [string]::IsNullOrWhiteSpace($script:SavedJoinWorkgroup)) {
                 Write-PSDWizardLog -Message "Pre-selecting Workgroup radio (JoinWorkgroup='$script:SavedJoinWorkgroup')" -Component $FunctionName
-                
+
                 # Manually trigger visibility update
-                if ($txtJoinWorkgroup) { 
+                if ($txtJoinWorkgroup) {
                     $txtJoinWorkgroup.Text = $script:SavedJoinWorkgroup
                     Set-PSDWizardTSEnvProperty -Name 'JoinWorkgroup' -Value $script:SavedJoinWorkgroup
                     Write-PSDWizardLog -Message "Set workgroup textbox to: $($script:SavedJoinWorkgroup)" -Component $FunctionName
                 }
-                if ($grdJoinWorkgroup) { 
+                if ($grdJoinWorkgroup) {
                     $grdJoinWorkgroup.Visibility = [System.Windows.Visibility]::Visible
                     Write-PSDWizardLog -Message "Manually set Workgroup grid to Visible (IsVisible=$($grdJoinWorkgroup.IsVisible))" -Component $FunctionName
                 }
-                if ($grdJoinDomain) { 
+                if ($grdJoinDomain) {
                     $grdJoinDomain.Visibility = [System.Windows.Visibility]::Collapsed
                     Write-PSDWizardLog -Message "Manually set Domain grid to Collapsed" -Component $FunctionName
                 }
-                
+
                 $radJoinWorkgroup.IsChecked = $true
             }
             else {
                 # Neither is set - default to Domain
                 Write-PSDWizardLog -Message "No Domain or Workgroup value found - defaulting to Domain radio" -Component $FunctionName
-                
+
                 # Manually show domain grid
-                if ($grdJoinDomain) { 
+                if ($grdJoinDomain) {
                     $grdJoinDomain.Visibility = [System.Windows.Visibility]::Visible
                     Write-PSDWizardLog -Message "Manually set Domain grid to Visible (default) (IsVisible=$($grdJoinDomain.IsVisible))" -Component $FunctionName
                 }
-                if ($grdJoinWorkgroup) { 
+                if ($grdJoinWorkgroup) {
                     $grdJoinWorkgroup.Visibility = [System.Windows.Visibility]::Collapsed
                     Write-PSDWizardLog -Message "Manually set Workgroup grid to Collapsed (default)" -Component $FunctionName
                 }
-                
+
                 $radJoinDomain.IsChecked = $true
             }
-            
+
             # Trigger initial validation based on which radio is selected
             # This ensures Next button is properly disabled if required fields are empty
             if ($radJoinDomain.IsChecked -eq $true) {
                 Write-PSDWizardLog -Message "Running initial domain validation to set Next button state" -Component $FunctionName
                 Confirm-PSDWizardDomainRequirements -Window $Window -ValidationCanvasName '_detTabValidation2_Name' -UpdateNextButton
             }
-            
+
             Write-PSDWizardLog -Message "Domain/Workgroup radio button handlers configured successfully" -Component $FunctionName
         }
         else {
             Write-PSDWizardLog -Message "Domain/Workgroup radio buttons not found (DeviceDetails page may not be included in this theme)" -LogLevel 1 -Component $FunctionName
         }
-        
+
         #endregion
-        
+
         #region DOMAIN FIELDS COMPREHENSIVE VALIDATION
-        
+
         # Add validation handlers for domain join account password and domain fields
         # These trigger comprehensive domain validation to ensure all required fields are filled
         $domainPasswordField = $Window.FindName('TSEnv_DomainAdminPassword')
         $domainConfirmPasswordField = $Window.FindName('_DomainAdminConfirmPassword')
         $domainAdminDomainField = $Window.FindName('TSEnv_DomainAdminDomain')
-        
+
         if ($domainPasswordField -and $domainConfirmPasswordField) {
             Write-PSDWizardLog -Message "Adding domain password validation handlers" -Component $FunctionName
-            
+
             # Create handler that triggers comprehensive domain validation
             $domainPasswordValidationHandler = {
                 param($sender, $e)
@@ -6408,17 +6408,17 @@ SelectedItem
                     Confirm-PSDWizardDomainRequirements -Window $wnd -ValidationCanvasName '_detTabValidation2_Name' -UpdateNextButton
                 }
             }
-            
+
             # Wire up to both password fields
             $domainPasswordField.Add_PasswordChanged($domainPasswordValidationHandler)
             $domainConfirmPasswordField.Add_PasswordChanged($domainPasswordValidationHandler)
-            
+
             Write-PSDWizardLog -Message "Added PasswordChanged handlers for domain join account passwords" -Component $FunctionName
         }
-        
+
         if ($domainAdminDomainField) {
             Write-PSDWizardLog -Message "Adding domain admin domain validation handler" -Component $FunctionName
-            
+
             # GotFocus - validate when user enters field
             $domainAdminDomainField.Add_GotFocus({
                 param($sender, $e)
@@ -6427,7 +6427,7 @@ SelectedItem
                     Confirm-PSDWizardDomainRequirements -Window $wnd -ValidationCanvasName '_detTabValidation2_Name' -UpdateNextButton
                 }
             })
-            
+
             # TextChanged - validate as user types
             $domainAdminDomainField.Add_TextChanged({
                 param($sender, $e)
@@ -6436,14 +6436,18 @@ SelectedItem
                     Confirm-PSDWizardDomainRequirements -Window $wnd -ValidationCanvasName '_detTabValidation2_Name' -UpdateNextButton
                 }
             })
-            
+
             Write-PSDWizardLog -Message "Added validation handlers for TSEnv_DomainAdminDomain" -Component $FunctionName
         }
-        
+
         #endregion
-        
-        # Execute deployment readiness checks if available
-        if ($SyncHash.ResourcePath) {
+
+        # The generated page controls whether readiness scripts are eligible to run.
+        $readinessPage = $Window.FindName('_wizReadiness')
+        if (-not $readinessPage) {
+            Write-PSDWizardLog -Message "Deployment Readiness page is not present - skipping readiness checks" -Component $FunctionName
+        }
+        elseif ($SyncHash.ResourcePath) {
             Write-PSDWizardLog -Message "Invoking deployment readiness checks..." -Component $FunctionName
             try {
                 Invoke-PSDWizardReadinessChecks -Window $Window -ResourcePath $SyncHash.ResourcePath -TSEnvSettings $SyncHash.TSEnvSettings
@@ -6455,9 +6459,9 @@ SelectedItem
         else {
             Write-PSDWizardLog -Message "ResourcePath not found in SyncHash - skipping readiness checks" -LogLevel 1 -Component $FunctionName
         }
-        
+
         Write-PSDWizardLog -Message "Data initialization complete" -Component $FunctionName
-        
+
         # Wire up page-specific event handlers
         Initialize-PSDWizardPageHandlers -Window $Window -SyncHash $SyncHash
     }
@@ -6482,27 +6486,27 @@ Function Initialize-PSDWizardPageHandlers {
     Param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Window]$Window,
-        
+
         [Parameter(Mandatory=$true)]
         [hashtable]$SyncHash
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Registering page-specific event handlers..." -Component $FunctionName
-    
+
     try {
         # Task Sequence page
         if ($Window.FindName('_wizTaskSequence')) {
             Write-PSDWizardLog -Message "Registering Task Sequence page handlers" -Component $FunctionName
             Register-PSDWizardTaskSequenceHandlers -Window $Window -SyncHash $SyncHash
         }
-        
+
         # Applications page
         if ($Window.FindName('_wizApplications')) {
             Write-PSDWizardLog -Message "Registering Applications page handlers" -Component $FunctionName
             Register-PSDWizardApplicationHandlers -Window $Window -SyncHash $SyncHash
         }
-        
+
         # Target Disk page
         $diskControls = @('_lstDisks', '_lstVolumes', '_cmbTargetDisk')
         $hasTargetDiskPage = $false
@@ -6512,12 +6516,12 @@ Function Initialize-PSDWizardPageHandlers {
                 break
             }
         }
-        
+
         if ($hasTargetDiskPage) {
             Write-PSDWizardLog -Message "Registering Target Disk page handlers" -Component $FunctionName
             Register-PSDWizardTargetDiskHandlers -Window $Window -SyncHash $SyncHash
         }
-        
+
         Write-PSDWizardLog -Message "Page handler registration complete" -Component $FunctionName
     }
     catch {
@@ -6541,14 +6545,14 @@ Function Register-PSDWizardTaskSequenceHandlers {
     Param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Window]$Window,
-        
+
         [Parameter(Mandatory=$true)]
         [hashtable]$SyncHash
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Wiring up Task Sequence page handlers..." -Component $FunctionName
-    
+
     try {
         # Find the TS control (TreeView, ListBox, or DataGrid)
         $tsControlNames = @('_tsTabTree', '_tsTabList', 'TSEnv_TaskSequence', '_lstTaskSequence')
@@ -6559,25 +6563,25 @@ Function Register-PSDWizardTaskSequenceHandlers {
                 break
             }
         }
-        
+
         if (-not $tsTreeControl) {
             Write-PSDWizardLog -Message "No Task Sequence control found - skipping handler registration" -LogLevel 1 -Component $FunctionName
             return
         }
-        
+
         # Find button controls
         $searchButton = $Window.FindName('_tsTabSearchEnter')
         $clearButton = $Window.FindName('_tsTabSearchClear')
         $expandButton = $Window.FindName('_tsTabExpand')
         $collapseButton = $Window.FindName('_tsTabCollapse')
         $searchTextBox = $Window.FindName('_tsTabSearch')
-        
+
         # Wire up Search textbox placeholder behavior
         if ($searchTextBox) {
             # Initially disable search buttons
             if ($searchButton) { $searchButton.IsEnabled = $false }
             if ($clearButton) { $clearButton.IsEnabled = $false }
-            
+
             # Add placeholder text behavior (clear on focus, restore on blur)
             $searchTextBox.Add_GotFocus({
                 param($sender, $e)
@@ -6586,7 +6590,7 @@ Function Register-PSDWizardTaskSequenceHandlers {
                     $sender.Foreground = 'Black'
                 }
             })
-            
+
             $searchTextBox.Add_LostFocus({
                 param($sender, $e)
                 if ([string]::IsNullOrWhiteSpace($sender.Text)) {
@@ -6594,7 +6598,7 @@ Function Register-PSDWizardTaskSequenceHandlers {
                     $sender.Foreground = 'Gray'
                 }
             })
-            
+
             # Enable search buttons when text is entered
             $searchTextBox.Add_TextChanged({
                 param($sender, $e)
@@ -6603,15 +6607,15 @@ Function Register-PSDWizardTaskSequenceHandlers {
                     $btnSearch = $win.FindName('_tsTabSearchEnter')
                     $btnClear = $win.FindName('_tsTabSearchClear')
                     $hasText = -not [string]::IsNullOrWhiteSpace($sender.Text) -and $sender.Text -ne 'Search...'
-                    
+
                     if ($btnSearch) { $btnSearch.IsEnabled = $hasText }
                     if ($btnClear) { $btnClear.IsEnabled = $hasText }
                 }
             })
-            
+
             Write-PSDWizardLog -Message "Registered search textbox handlers" -Component $FunctionName
         }
-        
+
         # Wire up Search button
         if ($searchButton) {
             $searchButton.Add_Click({
@@ -6624,27 +6628,27 @@ Function Register-PSDWizardTaskSequenceHandlers {
                         $tsCtrl = $win.FindName($name)
                         if ($tsCtrl) { break }
                     }
-                    
+
                     if ($tsCtrl -and $searchBox -and -not [string]::IsNullOrWhiteSpace($searchBox.Text)) {
                         $filter = $searchBox.Text
                         Write-PSDWizardLog -Message "Searching task sequences for: $filter" -Component 'TaskSequence_Handler'
-                        
+
                         # Filter items based on control type
                         if ($tsCtrl.GetType().Name -eq 'TreeView') {
                             # Collapse all first to hide non-matching items
                             foreach ($item in $tsCtrl.Items) {
                                 $item.IsExpanded = $false
                             }
-                            
+
                             # Search and expand matching items
                             foreach ($item in $tsCtrl.Items) {
                                 $matchFound = $false
-                                
+
                                 # Check folder name
                                 if ($item.Header -match $filter) {
                                     $matchFound = $true
                                 }
-                                
+
                                 # Check children
                                 if ($item.Items.Count -gt 0) {
                                     foreach ($child in $item.Items) {
@@ -6655,7 +6659,7 @@ Function Register-PSDWizardTaskSequenceHandlers {
                                         }
                                     }
                                 }
-                                
+
                                 # Show folder if it or its children match
                                 if ($matchFound) {
                                     $item.Visibility = [System.Windows.Visibility]::Visible
@@ -6670,7 +6674,7 @@ Function Register-PSDWizardTaskSequenceHandlers {
             })
             Write-PSDWizardLog -Message "Registered Search button handler" -Component $FunctionName
         }
-        
+
         # Wire up Clear button
         if ($clearButton) {
             $clearButton.Add_Click({
@@ -6685,13 +6689,13 @@ Function Register-PSDWizardTaskSequenceHandlers {
                         $tsCtrl = $win.FindName($name)
                         if ($tsCtrl) { break }
                     }
-                    
+
                     if ($searchBox) {
                         $searchBox.Text = ''
                         if ($btnSearch) { $btnSearch.IsEnabled = $false }
                         if ($btnClear) { $btnClear.IsEnabled = $false }
                     }
-                    
+
                     # Restore visibility of all items
                     if ($tsCtrl -and $tsCtrl.GetType().Name -eq 'TreeView') {
                         foreach ($item in $tsCtrl.Items) {
@@ -6699,13 +6703,13 @@ Function Register-PSDWizardTaskSequenceHandlers {
                             $item.IsExpanded = $true
                         }
                     }
-                    
+
                     Write-PSDWizardLog -Message "Cleared task sequence search filter" -Component 'TaskSequence_Handler'
                 }
             })
             Write-PSDWizardLog -Message "Registered Clear button handler" -Component $FunctionName
         }
-        
+
         # Wire up Expand All button (TreeView only)
         if ($expandButton -and $tsTreeControl.GetType().Name -eq 'TreeView') {
             $expandButton.Add_Click({
@@ -6717,7 +6721,7 @@ Function Register-PSDWizardTaskSequenceHandlers {
                         $tsCtrl = $win.FindName($name)
                         if ($tsCtrl -and $tsCtrl.GetType().Name -eq 'TreeView') { break }
                     }
-                    
+
                     if ($tsCtrl) {
                         foreach ($item in $tsCtrl.Items) {
                             if ($item.Items.Count -gt 0) {
@@ -6730,7 +6734,7 @@ Function Register-PSDWizardTaskSequenceHandlers {
             })
             Write-PSDWizardLog -Message "Registered Expand All button handler" -Component $FunctionName
         }
-        
+
         # Wire up Collapse All button (TreeView only)
         if ($collapseButton -and $tsTreeControl.GetType().Name -eq 'TreeView') {
             $collapseButton.Add_Click({
@@ -6742,7 +6746,7 @@ Function Register-PSDWizardTaskSequenceHandlers {
                         $tsCtrl = $win.FindName($name)
                         if ($tsCtrl -and $tsCtrl.GetType().Name -eq 'TreeView') { break }
                     }
-                    
+
                     if ($tsCtrl) {
                         foreach ($item in $tsCtrl.Items) {
                             if ($item.Items.Count -gt 0) {
@@ -6755,7 +6759,7 @@ Function Register-PSDWizardTaskSequenceHandlers {
             })
             Write-PSDWizardLog -Message "Registered Collapse All button handler" -Component $FunctionName
         }
-        
+
         Write-PSDWizardLog -Message "Task Sequence page handlers registered successfully" -Component $FunctionName
     }
     catch {
@@ -6779,20 +6783,20 @@ Function Register-PSDWizardApplicationHandlers {
     Param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Window]$Window,
-        
+
         [Parameter(Mandatory=$true)]
         [hashtable]$SyncHash
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Wiring up Applications page handlers..." -Component $FunctionName
-    
+
     try {
         # TODO: Add application page specific handlers here
         # - Search textbox
         # - Select All / Select None buttons
         # - Application bundles dropdown
-        
+
         Write-PSDWizardLog -Message "Applications page handlers registered successfully (placeholder)" -Component $FunctionName
     }
     catch {
@@ -6816,14 +6820,14 @@ Function Register-PSDWizardTargetDiskHandlers {
     Param(
         [Parameter(Mandatory=$true)]
         [System.Windows.Window]$Window,
-        
+
         [Parameter(Mandatory=$true)]
         [hashtable]$SyncHash
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Target Disk page handlers already registered during data initialization" -Component $FunctionName
-    
+
     # Note: Target Disk handlers are already wired up in Initialize-PSDWizardData
     # during the TargetDisk Page Population section. This is intentional because
     # those handlers are tightly coupled to the data population logic.
@@ -6855,23 +6859,23 @@ Function Import-PSDWizardCustomSettings {
         [ValidateScript({Test-Path $_ -PathType Leaf})]
         [string]$Path
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Parsing INI file: $Path" -Component $FunctionName
-    
+
     $settings = @{}
     $currentSection = 'Default'
     $settings[$currentSection] = @{}
-    
+
     try {
         $content = Get-Content -Path $Path -ErrorAction Stop
-        
+
         foreach ($line in $content) {
             # Skip empty lines and comments
             if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*;') {
                 continue
             }
-            
+
             # Section header [SectionName]
             if ($line -match '^\s*\[(.+)\]\s*$') {
                 $currentSection = $matches[1].Trim()
@@ -6880,21 +6884,21 @@ Function Import-PSDWizardCustomSettings {
                 }
                 continue
             }
-            
+
             # Key=Value pair
             if ($line -match '^\s*([^=;]+?)\s*=\s*(.*)$') {
                 $key = $matches[1].Trim()
                 $value = $matches[2].Trim()
-                
+
                 # Remove inline comments
                 if ($value -match '^([^;]+);.*$') {
                     $value = $matches[1].Trim()
                 }
-                
+
                 $settings[$currentSection][$key] = $value
             }
         }
-        
+
         Write-PSDWizardLog -Message "Parsed $($settings.Keys.Count) sections with $($settings.Values.Values.Count) total properties" -Component $FunctionName
         return $settings
     }
@@ -6903,6 +6907,200 @@ Function Import-PSDWizardCustomSettings {
         return @{ 'Default' = @{} }
     }
 }
+
+Function Get-PSDWizardApplicationProfileGuids {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory=$true)]
+            [string]$ControlPath,
+            [Parameter(Mandatory=$true)]
+            [string]$SelectionName,
+            [Parameter(Mandatory=$true)]
+            [object[]]$Applications,
+            [Parameter(Mandatory=$true)]
+            [object[]]$ApplicationGroups
+        )
+
+        $selectionXmlPath = Join-Path $ControlPath 'SelectionProfiles.xml'
+        if (-not (Test-Path $selectionXmlPath)) {
+            Write-PSDWizardLog -Message "SelectionProfiles.xml not found at $selectionXmlPath" -LogLevel 2 -Component $MyInvocation.MyCommand.Name
+            return @()
+        }
+
+        try {
+            [xml]$selectionDocument = Get-Content $selectionXmlPath -Raw -Encoding UTF8
+            $matchedEntry = @($selectionDocument.selectionProfiles.selectionProfile | Where-Object {
+                $_.Name -ieq $SelectionName -and $_.enable -ine 'False'
+            } | Select-Object -First 1)
+            if ($matchedEntry.Count -eq 0) {
+                Write-PSDWizardLog -Message "Enabled selection profile '$SelectionName' was not found" -LogLevel 2 -Component $MyInvocation.MyCommand.Name
+                return @()
+            }
+
+            [xml]$definition = [string]$matchedEntry[0].Definition
+            $rules = @($definition.SelectionProfile.ChildNodes | Where-Object {
+                $_.NodeType -eq [System.Xml.XmlNodeType]::Element -and $_.Name -in @('Include', 'Exclude') -and -not [string]::IsNullOrWhiteSpace($_.path)
+            } | ForEach-Object {
+                [PSCustomObject]@{
+                    Action = $_.Name
+                    Path = ([string]$_.path).Replace('/', '\').Trim('\')
+                }
+            })
+
+            $groupsByGuid = @{}
+            foreach ($group in $ApplicationGroups) {
+                if ($group.guid -and $group.enable -ine 'False') {
+                    $groupsByGuid[[string]$group.guid] = $group
+                }
+            }
+
+            $applicationsByGuid = @{}
+            foreach ($application in $Applications) {
+                if ($application.guid) {
+                    $applicationsByGuid[[string]$application.guid] = $application
+                }
+            }
+
+            $nestedGroupGuids = @{}
+            foreach ($group in $groupsByGuid.Values) {
+                foreach ($member in @($group.Member)) {
+                    if ($groupsByGuid.ContainsKey([string]$member)) {
+                        $nestedGroupGuids[[string]$member] = $true
+                    }
+                }
+            }
+
+            $rootGroups = @($groupsByGuid.Values | Where-Object { -not $nestedGroupGuids.ContainsKey([string]$_.guid) })
+            if ($rootGroups.Count -eq 0) {
+                $rootGroups = @($groupsByGuid.Values)
+            }
+
+            $pathsByApplicationGuid = @{}
+            $groupQueue = New-Object System.Collections.Queue
+            foreach ($group in $rootGroups) {
+                $rootPath = 'Applications'
+                if ($group.Name -ine 'default') {
+                    $rootPath = Join-Path $rootPath ([string]$group.Name)
+                }
+                $groupQueue.Enqueue([PSCustomObject]@{
+                    Group = $group
+                    Path = $rootPath
+                    Ancestors = @()
+                })
+            }
+
+            while ($groupQueue.Count -gt 0) {
+                $entry = $groupQueue.Dequeue()
+                $groupGuid = [string]$entry.Group.guid
+                if ($groupGuid -in $entry.Ancestors) {
+                    continue
+                }
+
+                $ancestors = @($entry.Ancestors) + $groupGuid
+                foreach ($member in @($entry.Group.Member)) {
+                    $memberGuid = [string]$member
+                    if ($applicationsByGuid.ContainsKey($memberGuid)) {
+                        $applicationPath = Join-Path $entry.Path ([string]$applicationsByGuid[$memberGuid].Name)
+                        if ($pathsByApplicationGuid.ContainsKey($memberGuid)) {
+                            $pathsByApplicationGuid[$memberGuid] = @($pathsByApplicationGuid[$memberGuid]) + $applicationPath
+                        }
+                        else {
+                            $pathsByApplicationGuid[$memberGuid] = @($applicationPath)
+                        }
+                    }
+                    elseif ($groupsByGuid.ContainsKey($memberGuid)) {
+                        $childGroup = $groupsByGuid[$memberGuid]
+                        $groupQueue.Enqueue([PSCustomObject]@{
+                            Group = $childGroup
+                            Path = Join-Path $entry.Path ([string]$childGroup.Name)
+                            Ancestors = $ancestors
+                        })
+                    }
+                }
+            }
+
+            foreach ($application in $Applications) {
+                $applicationGuid = [string]$application.guid
+                if (-not $pathsByApplicationGuid.ContainsKey($applicationGuid)) {
+                    $pathsByApplicationGuid[$applicationGuid] = @((Join-Path 'Applications' ([string]$application.Name)))
+                }
+            }
+
+            $eligibleGuids = @()
+            foreach ($application in $Applications) {
+                $isIncluded = $false
+                foreach ($applicationPath in $pathsByApplicationGuid[[string]$application.guid]) {
+                    $winningRule = $null
+                    foreach ($rule in $rules) {
+                        $matchesPath = $applicationPath -ieq $rule.Path -or $applicationPath.StartsWith($rule.Path + '\', [System.StringComparison]::OrdinalIgnoreCase)
+                        if ($matchesPath -and ($null -eq $winningRule -or $rule.Path.Length -ge $winningRule.Path.Length)) {
+                            $winningRule = $rule
+                        }
+                    }
+
+                    if ($winningRule -and $winningRule.Action -ieq 'Include') {
+                        $isIncluded = $true
+                        break
+                    }
+                }
+
+                if ($isIncluded) {
+                    $eligibleGuids += [string]$application.guid
+                }
+            }
+
+            return $eligibleGuids
+        }
+        catch {
+            Write-PSDWizardLog -Message "Unable to resolve selection profile '$SelectionName' at $($_.InvocationInfo.PositionMessage): $($_.Exception.Message)" -LogLevel 2 -Component $MyInvocation.MyCommand.Name
+            return @()
+        }
+    }
+
+    Function Get-PSDWizardNumberedTSEnvLists {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory=$false)]
+            [hashtable]$TSEnvSettings
+        )
+
+        $lists = @{}
+        if (-not $TSEnvSettings) {
+            return $lists
+        }
+
+        $numberedProperties = @{}
+        foreach ($key in $TSEnvSettings.Keys) {
+            $match = [regex]::Match([string]$key, '^(?<Name>.+?)(?<Index>\d{3})$')
+            if (-not $match.Success) {
+                continue
+            }
+
+            $name = $match.Groups['Name'].Value
+            if ($name -in @('Applications', 'MandatoryApplications')) {
+                continue
+            }
+
+            if (-not $numberedProperties.ContainsKey($name)) {
+                $numberedProperties[$name] = @()
+            }
+            $numberedProperties[$name] += [PSCustomObject]@{
+                Index = [int]$match.Groups['Index'].Value
+                Value = $TSEnvSettings[$key]
+            }
+        }
+
+        foreach ($name in $numberedProperties.Keys) {
+            $values = @($numberedProperties[$name] | Sort-Object Index | Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string]$_.Value)
+            } | ForEach-Object { $_.Value })
+            if ($values.Count -gt 0) {
+                $lists[$name] = $values
+            }
+        }
+
+        return $lists
+    }
 
 Function Import-PSDWizardControlData {
     <#
@@ -6928,10 +7126,10 @@ Function Import-PSDWizardControlData {
         [ValidateScript({Test-Path $_ -PathType Container})]
         [string]$ControlPath
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Loading Control folder data from: $ControlPath" -Component $FunctionName
-    
+
     $data = @{
         Applications = @()
         ApplicationGroups = @()
@@ -6939,7 +7137,7 @@ Function Import-PSDWizardControlData {
         TaskSequenceGroups = @()
         OperatingSystems = @()
     }
-    
+
     try {
         # Load ApplicationGroups.xml first
         $appGroupsXml = Join-Path $ControlPath 'ApplicationGroups.xml'
@@ -6948,19 +7146,19 @@ Function Import-PSDWizardControlData {
             $data.ApplicationGroups = @($appGroupsDoc.groups.group)
             Write-PSDWizardLog -Message "Loaded $($data.ApplicationGroups.Count) application groups" -Component $FunctionName
         }
-        
+
         # Load Applications.xml
         $appsXml = Join-Path $ControlPath 'Applications.xml'
         if (Test-Path $appsXml) {
             [xml]$appsDoc = Get-Content $appsXml -Encoding UTF8
             $allApps = @($appsDoc.applications.application)
-            
+
             # Get enabled groups
-            $enabledGroups = @($data.ApplicationGroups | Where-Object { 
+            $enabledGroups = @($data.ApplicationGroups | Where-Object {
                 ($_.enable -eq 'True') -or ([string]::IsNullOrEmpty($_.enable))
             })
             $enabledGroupMembers = @($enabledGroups | ForEach-Object { $_.Member }) | Where-Object { $_ }
-            
+
             # Filter: enable="True" AND hide != "True" AND in enabled group
             $data.Applications = @($allApps | Where-Object {
                 $isEnabled = ($_.enable -eq 'True') -or ([string]::IsNullOrEmpty($_.enable))
@@ -6968,10 +7166,10 @@ Function Import-PSDWizardControlData {
                 $inEnabledGroup = ($enabledGroupMembers.Count -eq 0) -or ($_.guid -in $enabledGroupMembers)
                 $isEnabled -and $isVisible -and $inEnabledGroup
             })
-            
+
             Write-PSDWizardLog -Message "Loaded $($data.Applications.Count) visible applications (filtered from $($allApps.Count) total)" -Component $FunctionName
         }
-        
+
         # Load TaskSequenceGroups.xml first
         $tsGroupsXml = Join-Path $ControlPath 'TaskSequenceGroups.xml'
         if (Test-Path $tsGroupsXml) {
@@ -6979,19 +7177,19 @@ Function Import-PSDWizardControlData {
             $data.TaskSequenceGroups = @($tsGroupsDoc.groups.group)
             Write-PSDWizardLog -Message "Loaded $($data.TaskSequenceGroups.Count) task sequence groups" -Component $FunctionName
         }
-        
+
         # Load TaskSequences.xml
         $tsXml = Join-Path $ControlPath 'TaskSequences.xml'
         if (Test-Path $tsXml) {
             [xml]$tsDoc = Get-Content $tsXml -Encoding UTF8
             $allTS = @($tsDoc.tss.ts)
-            
+
             # Get enabled groups
-            $enabledGroups = @($data.TaskSequenceGroups | Where-Object { 
+            $enabledGroups = @($data.TaskSequenceGroups | Where-Object {
                 ($_.enable -eq 'True') -or ([string]::IsNullOrEmpty($_.enable))
             })
             $enabledGroupMembers = @($enabledGroups | ForEach-Object { $_.Member }) | Where-Object { $_ }
-            
+
             # Filter: enable="True" AND hide != "True" AND in enabled group
             $data.TaskSequences = @($allTS | Where-Object {
                 $isEnabled = ($_.enable -eq 'True') -or ([string]::IsNullOrEmpty($_.enable))
@@ -6999,26 +7197,26 @@ Function Import-PSDWizardControlData {
                 $inEnabledGroup = ($enabledGroupMembers.Count -eq 0) -or ($_.guid -in $enabledGroupMembers)
                 $isEnabled -and $isVisible -and $inEnabledGroup
             })
-            
+
             Write-PSDWizardLog -Message "Loaded $($data.TaskSequences.Count) visible task sequences (filtered from $($allTS.Count) total)" -Component $FunctionName
         }
-        
+
         # Load OperatingSystems.xml
         $osXml = Join-Path $ControlPath 'OperatingSystems.xml'
         if (Test-Path $osXml) {
             [xml]$osDoc = Get-Content $osXml -Encoding UTF8
             $allOS = @($osDoc.oss.os)
-            
-            # Filter: enable="True" AND hide != "True"  
+
+            # Filter: enable="True" AND hide != "True"
             $data.OperatingSystems = @($allOS | Where-Object {
                 $isEnabled = ($_.enable -eq 'True') -or ([string]::IsNullOrEmpty($_.enable))
                 $isVisible = ($_.hide -ne 'True')
                 $isEnabled -and $isVisible
             })
-            
+
             Write-PSDWizardLog -Message "Loaded $($data.OperatingSystems.Count) visible operating systems (filtered from $($allOS.Count) total)" -Component $FunctionName
         }
-        
+
         return $data
     }
     catch {
@@ -7067,35 +7265,35 @@ Function Show-PSDWizard {
     Param(
         [Parameter(Mandatory=$false)]
         [string]$ResourcePath = (Join-Path $PSScriptRoot 'PSDWizardNew'),
-        
+
         [Parameter(Mandatory=$false)]
         [string]$Language = 'en-US',
-        
+
         [Parameter(Mandatory=$false)]
         [string]$Theme = 'Classic',
-        
+
         [Parameter(Mandatory=$false)]
         [string]$Page,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$ControlPath,
-        
+
         [Parameter(Mandatory=$false)]
         [hashtable]$TSEnvSettings,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$DevelopmentMode,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$NoSplashScreen,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Passthru
     )
-    
+
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "===== PSDWizardNew v$($script:ModuleVersion) Starting =====" -Component $FunctionName
-    
+
     try {
         # Detect environment
         $envInfo = Test-PSDWizardEnvironment
@@ -7103,50 +7301,53 @@ Function Show-PSDWizard {
             $envInfo.IsDevelopment = $true
             $script:IsDevelopmentMode = $true
         }
-        
+        elseif (-not $envInfo.TSEnvAvailable) {
+            throw "PSD TSEnv: drive is unavailable. Ensure PSD initialized the task-sequence environment before launching the wizard. Use -DevelopmentMode only for explicit local testing."
+        }
+
         Write-PSDWizardLog -Message "Environment: WinPE=$($envInfo.IsWinPE), TSEnv=$($envInfo.TSEnvAvailable), Dev=$($envInfo.IsDevelopment)" -Component $FunctionName
-        
+
         # Initialize state
         $syncHash = Initialize-PSDWizardState -DevelopmentMode:$DevelopmentMode
         $syncHash.ResourcePath = $ResourcePath
         $syncHash.Language = $Language
         $syncHash.Theme = $Theme
         $script:PSDWizardSyncHash = $syncHash
-        
+
         # Show splashscreen
         $splashScreen = $null
         if (-not $NoSplashScreen) {
             $splashScreen = Show-PSDWizardSplashScreen -Theme $Theme -Language $Language
             Update-PSDWizardProgressBar -Runspace $splashScreen -Status "Initializing..." -PercentComplete 10
         }
-        
+
         # Load definition files
         Write-PSDWizardLog -Message "Loading definition files..." -Component $FunctionName
         $langFile = Join-Path $ResourcePath "PSDWizard_Definitions_$Language.xml"
         $themeFile = Join-Path $ResourcePath "Themes\${Theme}_Theme_Definitions_$Language.xml"
-        
+
         if (-not (Test-Path $langFile)) {
             throw "Language definition file not found: $langFile"
         }
-        
+
         if (-not (Test-Path $themeFile)) {
             Write-PSDWizardLog -Message "Theme file not found: $themeFile, falling back to Classic" -LogLevel 2 -Component $FunctionName
             $themeFile = Join-Path $ResourcePath "Themes\Classic_Theme_Definitions_$Language.xml"
         }
-        
+
         if ($splashScreen) {
             Update-PSDWizardProgressBar -Runspace $splashScreen -Status "Loading definitions..." -PercentComplete 25
         }
-        
+
         [xml]$langDefinition = Get-Content $langFile -Encoding UTF8
         [xml]$themeDefinition = Get-Content $themeFile -Encoding UTF8
-        
+
         Write-PSDWizardLog -Message "Loaded language: $Language, theme: $Theme" -Component $FunctionName
-        
+
         # Get TSEnv settings or simulate in DevelopmentMode
         if ($envInfo.IsDevelopment) {
             Write-PSDWizardLog -Message "DevelopmentMode: Simulating TSEnvironment" -Component $FunctionName
-            
+
             # In DevelopmentMode, TSEnvSettings should be passed in from test script
             # which has already imported modules and populated properties
             # If not provided, create minimal mock settings
@@ -7168,7 +7369,7 @@ Function Show-PSDWizard {
                 $tsEnvSettings = $TSEnvSettings
                 Write-PSDWizardLog -Message "Using TSEnvSettings provided by caller ($($tsEnvSettings.Count) properties)" -Component $FunctionName
             }
-            
+
             # Determine Control folder path
             if (-not $ControlPath) {
                 # Try default locations
@@ -7177,7 +7378,7 @@ Function Show-PSDWizard {
                     'C:\Deploy\Control',
                     'E:\PSD\Control'
                 )
-                
+
                 foreach ($path in $defaultPaths) {
                     if (Test-Path $path) {
                         $ControlPath = $path
@@ -7186,73 +7387,34 @@ Function Show-PSDWizard {
                     }
                 }
             }
-            
+
             # PSDGather evaluates CustomSettings.ini before the wizard starts.
             if ($ControlPath -and (Test-Path $ControlPath)) {
                 # Load deployment data (applications, task sequences, etc.)
                 Write-PSDWizardLog -Message "Loading Control folder data: $ControlPath" -Component $FunctionName
                 $controlData = Import-PSDWizardControlData -ControlPath $ControlPath
-                
+
                 # Store in syncHash for access by other functions
                 $syncHash.ControlPath = $ControlPath
                 $syncHash.Applications = $controlData.Applications
+                $syncHash.ApplicationCatalog = $controlData.Applications
                 $syncHash.ApplicationGroups = $controlData.ApplicationGroups
                 $syncHash.TaskSequences = $controlData.TaskSequences
                 $syncHash.TaskSequenceGroups = $controlData.TaskSequenceGroups
                 $syncHash.OperatingSystems = $controlData.OperatingSystems
                 $syncHash.TSEnvSettings = $tsEnvSettings
-                
+
                 # Load locale and timezone data
                 Write-PSDWizardLog -Message "Loading locale and timezone data..." -Component $FunctionName
                 $scriptsPath = Split-Path -Parent $ControlPath
                 if (Test-Path "$scriptsPath\Scripts") {
                     $scriptsPath = "$scriptsPath\Scripts"
                 }
-                
+
                 $syncHash.Locales = Get-PSDWizardLocale -Path $scriptsPath
                 $syncHash.TimeZones = Get-PSDWizardTimeZoneIndex -Path $scriptsPath
                 Write-PSDWizardLog -Message "Loaded $($syncHash.Locales.Count) locales and $($syncHash.TimeZones.Count) timezones" -Component $FunctionName
-                
-                # Create TSEnvLists structure for list-based properties
-                # This simulates tsenvlist: provider in DevelopmentMode
-                $syncHash.TSEnvLists = @{}
-                
-                # Populate Applications list from loaded data
-                if ($controlData.Applications) {
-                    $appGuids = @($controlData.Applications | Select-Object -ExpandProperty guid)
-                    $syncHash.TSEnvLists['Applications'] = $appGuids
-                    Write-PSDWizardLog -Message "Created TSEnvLists['Applications'] with $($appGuids.Count) items" -Component $FunctionName
-                }
-                
-                # Populate TaskSequences list
-                if ($controlData.TaskSequences) {
-                    $tsGuids = @($controlData.TaskSequences | Select-Object -ExpandProperty guid)
-                    $syncHash.TSEnvLists['TaskSequences'] = $tsGuids
-                    Write-PSDWizardLog -Message "Created TSEnvLists['TaskSequences'] with $($tsGuids.Count) items" -Component $FunctionName
-                }
-                
-                # Scan for numbered properties (DeviceRole001, IntuneGroup001, DomainOUs001, etc.)
-                # and convert them into TSEnvLists arrays
-                $numberedPropertyPatterns = @('DeviceRole', 'IntuneGroup', 'DomainOUs')
-                foreach ($pattern in $numberedPropertyPatterns) {
-                    $matchingKeys = @($tsEnvSettings.Keys | Where-Object { $_ -match "^$pattern\d{3}$" } | Sort-Object)
-                    
-                    if ($matchingKeys.Count -gt 0) {
-                        $listItems = @()
-                        foreach ($key in $matchingKeys) {
-                            $value = $tsEnvSettings[$key]
-                            if (-not [string]::IsNullOrWhiteSpace($value)) {
-                                $listItems += $value
-                            }
-                        }
-                        
-                        if ($listItems.Count -gt 0) {
-                            $syncHash.TSEnvLists[$pattern] = $listItems
-                            Write-PSDWizardLog -Message "Created TSEnvLists['$pattern'] with $($listItems.Count) items from numbered properties" -Component $FunctionName
-                        }
-                    }
-                }
-                
+
                 Write-PSDWizardLog -Message "Loaded $($controlData.Applications.Count) apps, $($controlData.TaskSequences.Count) TS, $($controlData.OperatingSystems.Count) OS" -Component $FunctionName
             }
             else {
@@ -7260,12 +7422,13 @@ Function Show-PSDWizard {
             }
         }
         else {
-            # Convert provider result objects into the hashtable expected by formatting and UI initialization.
-            $tsEnvSettings = @{}
+            # Snapshot the processed PSD environment before entering the WPF runspace.
+            $tsEnvSettings = [hashtable]::Synchronized([hashtable]::new([System.StringComparer]::OrdinalIgnoreCase))
             $tsEnvProperties = @(Get-PSDWizardTSEnvProperty '*' -WildCard)
             foreach ($property in $tsEnvProperties) {
                 if ($property.Name) {
-                    $tsEnvSettings[$property.Name] = $property.Value
+                    $tsEnvSettings[[string]$property.Name] = $property.Value
+                    Write-PSDWizardLog -Message "Loaded TSEnv property: $($property.Name) = $($property.Value)" -Component $FunctionName
                 }
             }
             $syncHash.TSEnvSettings = $tsEnvSettings
@@ -7276,6 +7439,7 @@ Function Show-PSDWizard {
                 $controlData = Import-PSDWizardControlData -ControlPath $ControlPath
                 $syncHash.ControlPath = $ControlPath
                 $syncHash.Applications = $controlData.Applications
+                $syncHash.ApplicationCatalog = $controlData.Applications
                 $syncHash.ApplicationGroups = $controlData.ApplicationGroups
                 $syncHash.TaskSequences = $controlData.TaskSequences
                 $syncHash.TaskSequenceGroups = $controlData.TaskSequenceGroups
@@ -7285,14 +7449,26 @@ Function Show-PSDWizard {
             else {
                 Write-PSDWizardLog -Message "Control folder not available: $ControlPath" -LogLevel 2 -Component $FunctionName
             }
-            
+
             # Load locale and timezone data in production mode
             Write-PSDWizardLog -Message "Loading locale and timezone data..." -Component $FunctionName
             $syncHash.Locales = Get-PSDWizardLocale -Path $ResourcePath
             $syncHash.TimeZones = Get-PSDWizardTimeZoneIndex -Path $ResourcePath
             Write-PSDWizardLog -Message "Loaded $($syncHash.Locales.Count) locales and $($syncHash.TimeZones.Count) timezones" -Component $FunctionName
         }
-        
+
+        $syncHash.TSEnvLists = Get-PSDWizardNumberedTSEnvLists -TSEnvSettings $tsEnvSettings
+        Write-PSDWizardLog -Message "Loaded $($syncHash.TSEnvLists.Count) list-valued settings from TSEnv" -Component $FunctionName
+
+        $selectionProfileName = [string]$tsEnvSettings['WizardSelectionProfile']
+        if (-not [string]::IsNullOrWhiteSpace($selectionProfileName) -and $syncHash.ApplicationCatalog) {
+            $eligibleAppGuids = @(Get-PSDWizardApplicationProfileGuids -ControlPath $ControlPath -SelectionName $selectionProfileName -Applications $syncHash.ApplicationCatalog -ApplicationGroups $syncHash.ApplicationGroups)
+            $mandatoryAppGuids = @($tsEnvSettings.Keys | Where-Object { $_ -match '^MandatoryApplications\d{3}$' } | ForEach-Object { [string]$tsEnvSettings[$_] })
+            $eligibleAppGuids = @($eligibleAppGuids + $mandatoryAppGuids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+            $syncHash.Applications = @($syncHash.ApplicationCatalog | Where-Object { $_.guid -in $eligibleAppGuids })
+            Write-PSDWizardLog -Message "Filtered wizard applications using selection profile '$selectionProfileName': $($syncHash.Applications.Count) available" -Component $FunctionName
+        }
+
         # Get org name
         $orgName = $tsEnvSettings['_SMSTSOrgName']
         if (-not $orgName) {
@@ -7301,11 +7477,11 @@ Function Show-PSDWizard {
         if (-not $orgName) {
             $orgName = "Organization"
         }
-        
+
         if ($splashScreen) {
             Update-PSDWizardProgressBar -Runspace $splashScreen -Status "Building UI..." -PercentComplete 50
         }
-        
+
         # Generate XAML
         Write-PSDWizardLog -Message "Generating wizard XAML..." -Component $FunctionName
         $xaml = Format-PSDWizard -ResourcePath $ResourcePath `
@@ -7313,44 +7489,57 @@ Function Show-PSDWizard {
                                 -ThemeDefinition $themeDefinition `
                                 -TSEnvSettings $tsEnvSettings `
                                 -OrgName $orgName
-        
+
         if (-not $xaml) {
             throw "Failed to generate wizard XAML"
         }
-        
+
         Write-PSDWizardLog -Message "XAML generated successfully" -Component $FunctionName
-        
+
         if ($splashScreen) {
             Update-PSDWizardProgressBar -Runspace $splashScreen -Status "Rendering UI..." -PercentComplete 75
         }
-        
+
         # Close splashscreen before showing wizard
         if ($splashScreen) {
             Start-Sleep -Milliseconds 500
             Close-PSDWizardSplashScreen -Runspace $splashScreen
         }
-        
+
+        $tabItemCount = @($xaml.GetElementsByTagName('TabItem')).Count
+        if ($tabItemCount -eq 0) {
+            Write-PSDWizardLog -Message "All wizard panes were skipped by processed TSEnv settings; continuing without opening an empty wizard" -Component $FunctionName
+            $syncHash.Result = 'Completed'
+            $syncHash.IsClosed = $true
+
+            if ($Passthru) {
+                return $syncHash
+            }
+
+            return
+        }
+
         # Show wizard UI
         Write-PSDWizardLog -Message "Launching wizard UI..." -Component $FunctionName
         $result = Invoke-PSDWizard -XamlContent $xaml `
                                   -SyncHash $syncHash `
                                   -ResourcePath $ResourcePath `
                                   -DevelopmentMode:$DevelopmentMode
-        
+
         Write-PSDWizardLog -Message "Wizard completed with result: $($result.Result)" -Component $FunctionName
         Write-PSDWizardLog -Message "===== PSDWizardNew v$($script:ModuleVersion) Complete =====" -Component $FunctionName
-        
+
         if ($Passthru) {
             return $syncHash
         }
     }
     catch {
         Write-PSDWizardLog -Message "Critical error in Show-PSDWizard: $($_.Exception.Message)" -LogLevel 3 -Component $FunctionName
-        
+
         if ($splashScreen) {
             Close-PSDWizardSplashScreen -Runspace $splashScreen
         }
-        
+
         throw
     }
 }
@@ -7364,54 +7553,54 @@ Export-ModuleMember -Function @(
     # Environment
     'Test-PSDWizardEnvironment',
     'Write-PSDWizardLog',
-    
+
     # State Management
     'Initialize-PSDWizardState',
     'Get-PSDWizardState',
     'Set-PSDWizardState',
-    
+
     # Runspace Management
     'Start-PSDWizardRunspace',
     'Stop-PSDWizardRunspace',
-    
+
     # Definitions
     'Get-PSDWizardDefinitions',
     'Get-PSDWizardThemeDefinition',
     'Get-PSDWizardCondition',
-    
+
     # TSEnv
     'Get-PSDWizardTSEnvProperty',
     'Set-PSDWizardTSEnvProperty',
     'Remove-PSDWizardTSEnvProperty',
-    
+
     # Validation (FIXED)
     'Confirm-PSDWizardOSDJoinAccount',
     'Confirm-PSDWizardComputerName',
     'Confirm-PSDWizardPassword',
-    
+
     # Locale and TimeZone
     'Get-PSDWizardLocale',
     'Get-PSDWizardTimeZoneIndex',
-    
+
     # Test Functions
     'Test-PSDWizardApplicationExist',
-    
+
     # Applications (FIXED)
     'Export-PSDWizardApplication',
     'Get-PSDWizardSelectedApplications',
-    
+
     # Task Sequences (FIXED)
     'Export-PSDWizardTaskSequence',
-    
+
     # Splashscreen
     'Show-PSDWizardSplashScreen',
     'Close-PSDWizardSplashScreen',
     'Update-PSDWizardProgressBar',
-    
+
     # UI Builder
     'Format-PSDWizard',
     'Invoke-PSDWizard',
-    
+
     # Main Entry Point
     'Show-PSDWizard'
 )
