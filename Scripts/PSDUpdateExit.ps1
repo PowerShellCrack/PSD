@@ -228,8 +228,12 @@ If ($Env:STAGE -eq "WIM") {
 
     $inputLocale = Get-PSDWinPEInputLocale -DeployRoot $Env:DEPLOYROOT
     if ($inputLocale -and $inputLocale -ne '0409:00000409') {
+        $DismArgs = @(
+            ('/Image:"{0}"' -f $Env:CONTENT)
+            "/Set-InputLocale:$inputLocale"
+        )
         Write-PSDInstallLog -Message "Setting WinPE input locale to $inputLocale"
-        $dism = Start-Process -FilePath dism.exe -ArgumentList "/Image:$Env:CONTENT", "/Set-InputLocale:$inputLocale" -Wait -PassThru -NoNewWindow
+        $dism = Start-Process -FilePath dism.exe -ArgumentList $DismArgs -Wait -PassThru -NoNewWindow
 
         if ($dism.ExitCode -eq 0) {
             Write-PSDInstallLog -Message "WinPE input locale set to $inputLocale"

@@ -1185,6 +1185,10 @@ Function Get-PSDWizardTimeZoneIndex {
 #region VALIDATION FUNCTIONS
 
 Function Test-PSDWizardDomainAccountName {
+    <#
+    .SYNOPSIS
+        Tests whether a domain account name uses supported syntax.
+    #>
     [CmdletBinding()]
     [OutputType([bool])]
     Param(
@@ -2027,7 +2031,11 @@ Function Get-PSDWizardTSOSGUID {
     }
 }
 
-Function Initialize-PSDWizardRoleFeatureList {
+Function Update-PSDWizardPageVisibility {
+    <#
+    .SYNOPSIS
+        Applies definition-driven visibility to generated wizard panes.
+    #>
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory=$true)]
@@ -2037,22 +2045,106 @@ Function Initialize-PSDWizardRoleFeatureList {
         [hashtable]$SyncHash
     )
 
-    $rolePageControls = @{
-        '_wizDeviceRole' = 'SkipDeviceRole'
-        '_wizRolesAndFeatures' = 'SkipRoleSelection'
-    }
-    foreach ($pageName in $rolePageControls.Keys) {
-        $page = $Window.FindName($pageName)
-        if ($page) {
-            $showPage = $SyncHash.TSEnvSettings -and $SyncHash.TSEnvSettings[$rolePageControls[$pageName]] -ieq 'NO'
-            $page.Visibility = if ($showPage) { 'Visible' } else { 'Collapsed' }
+    foreach ($paneId in $SyncHash.DynamicPaneConditions.Keys) {
+        $page = $Window.FindName("_wiz$paneId")
+        if (-not $page) { continue }
+
+        $showPage = $true
+        foreach ($condition in $SyncHash.DynamicPaneConditions[$paneId]) {
+            if (-not (Get-PSDWizardCondition -Condition $condition -TSEnvSettings $SyncHash.TSEnvSettings)) {
+                $showPage = $false
+                break
+            }
         }
+
+        $page.Visibility = if ($showPage) { 'Visible' } else { 'Collapsed' }
+        Write-PSDWizardLog -Message "Pane '$paneId' visibility set to $($page.Visibility) from definition conditions" -Component $MyInvocation.MyCommand.Name
     }
 
     $tabControl = $Window.FindName('_wizTabControl')
     if ($tabControl) {
         Update-PSDWizardNavigationState -Window $Window -TabControl $tabControl
     }
+}
+
+Function Update-PSDWizardDependentControlSelections {
+    <#
+    .SYNOPSIS
+        Restores dependent control selections after Task Sequence rules change.
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [System.Windows.Window]$Window,
+
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash
+    )
+
+    if (-not $SyncHash.TSEnvSettings) { return }
+
+    foreach ($listName in @($SyncHash.TSEnvLists.Keys)) {
+        $control = $Window.FindName("TSEnvList_$listName")
+        $value = [string]$SyncHash.TSEnvSettings[$listName]
+        if ($control -and $control.PSObject.Properties['SelectedItem'] -and -not [string]::IsNullOrWhiteSpace($value)) {
+            $matchingItem = @($control.Items | Where-Object { $_.ToString() -eq $value }) | Select-Object -First 1
+            if ($matchingItem) { $control.SelectedItem = $matchingItem }
+        }
+    }
+
+    $localeMappings = @(
+        @{ Names = @('_locTabSystemLocale'); Property = 'SystemLocale' }
+        @{ Names = @('_locTabKeyboardLocale'); Property = 'KeyboardLocale' }
+        @{ Names = @('_locTabLanguage'); Property = 'UILanguage' }
+    )
+    foreach ($mapping in $localeMappings) {
+        $control = $mapping.Names | ForEach-Object { $Window.FindName($_) } | Where-Object { $_ } | Select-Object -First 1
+        $value = [string]$SyncHash.TSEnvSettings[$mapping.Property]
+        if (-not $control -or [string]::IsNullOrWhiteSpace($value)) { continue }
+
+        $matchingItem = if ($mapping.Property -eq 'KeyboardLocale') {
+            @($control.Items | Where-Object { $_.KeyboardLayout -ieq $value -or $_.Culture -ieq $value -or $_.Name -ieq $value -or $_.ID -ieq $value -or $_.KeyboardID -ieq $value }) | Select-Object -First 1
+        }
+        else {
+            @($control.Items | Where-Object { $_.Culture -ieq $value -or $_.Name -ieq $value -or $_.Language -ieq $value }) | Select-Object -First 1
+        }
+        if ($matchingItem) { $control.SelectedItem = $matchingItem }
+    }
+
+    foreach ($propertyName in @('TimeZoneName', 'TimeZone')) {
+        $controlName = if ($propertyName -eq 'TimeZoneName') { '_locTabTimeZoneName' } else { '_locTabTimeZone' }
+        $control = $Window.FindName($controlName)
+        $value = [string]$SyncHash.TSEnvSettings[$propertyName]
+        if ($control -and -not [string]::IsNullOrWhiteSpace($value)) {
+            $matchingItem = @($control.Items | Where-Object { $_.TimeZone -ieq $value -or $_.DisplayName -ieq $value -or $_.Name -ieq $value }) | Select-Object -First 1
+            if ($matchingItem) { $control.SelectedItem = $matchingItem }
+        }
+    }
+
+    $targetDisk = $Window.FindName('_cmbTargetDisk')
+    $diskValue = [string]$SyncHash.TSEnvSettings['OSDDiskIndex']
+    if ($targetDisk -and -not [string]::IsNullOrWhiteSpace($diskValue)) {
+        $diskIndex = 0
+        if ([int]::TryParse($diskValue, [ref]$diskIndex)) {
+            $matchingDisk = @($targetDisk.Items | Where-Object { [int]$_ -eq $diskIndex }) | Select-Object -First 1
+            if ($matchingDisk -ne $null) { $targetDisk.SelectedItem = $matchingDisk }
+        }
+    }
+}
+
+Function Initialize-PSDWizardRoleFeatureList {
+    <#
+    .SYNOPSIS
+        Loads the role and feature catalog for the selected operating system.
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [System.Windows.Window]$Window,
+
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash
+    )
 
     $featureList = $Window.FindName('_rolesFeatureList')
     if (-not $featureList) { return }
@@ -2108,6 +2200,41 @@ Function Initialize-PSDWizardRoleFeatureList {
         return
     }
 
+    $typeToProperty = @{
+        Role = 'OptionalOSRoles'
+        RoleService = 'OptionalOSRoleServices'
+        Feature = 'OptionalOSFeatures'
+    }
+    $existingSelections = @{}
+    foreach ($propertyName in $typeToProperty.Values | Select-Object -Unique) {
+        $existingSelections[$propertyName] = @([string]$SyncHash.TSEnvSettings[$propertyName] -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
+
+    $setTSEnvProperty = ${function:Set-PSDWizardTSEnvProperty}.GetNewClosure()
+    $syncRoleSelection = {
+        param($sender, $eventArgs)
+        $propertyName = $typeToProperty[[string]$sender.Tag.Type]
+        if (-not $propertyName) { return }
+
+        $selectedValues = @($featureList.Items | Where-Object {
+            $_.Tag.Type -eq $sender.Tag.Type -and $_.IsChecked -eq $true
+        } | ForEach-Object { [string]$_.Tag.Id })
+        $targetField = $Window.FindName("TSEnv_$propertyName")
+        if ($targetField) {
+            $targetField.Text = $selectedValues -join ','
+            if ($SyncHash.TSEnvSettings) {
+                $SyncHash.TSEnvSettings[$propertyName] = $targetField.Text
+            }
+            try {
+                & $setTSEnvProperty -Name $propertyName -Value $targetField.Text | Out-Null
+            }
+            catch {
+                Write-PSDWizardLog -Message "Unable to write $propertyName from role selection: $($_.Exception.Message)" -LogLevel 2 -Component 'RolesAndFeatures'
+            }
+            Write-PSDWizardLog -Message "Updated $propertyName from role catalog selection: $($selectedValues -join ',')" -Component 'RolesAndFeatures'
+        }
+    }.GetNewClosure()
+
     foreach ($featureNode in $featureNodes) {
         $displayName = [string]$featureNode.GetAttribute('DisplayName')
         $featureId = [string]$featureNode.GetAttribute('Id')
@@ -2117,6 +2244,10 @@ Function Initialize-PSDWizardRoleFeatureList {
             Id = $featureId
             Type = $featureNode.LocalName
         }
+        $propertyName = $typeToProperty[$featureNode.LocalName]
+        $checkBox.IsChecked = $existingSelections[$propertyName] -contains $featureId
+        $checkBox.Add_Checked($syncRoleSelection)
+        $checkBox.Add_Unchecked($syncRoleSelection)
         $checkBox.Margin = [System.Windows.Thickness]::new(4, 2, 4, 2)
         [void]$featureList.Items.Add($checkBox)
     }
@@ -2781,7 +2912,7 @@ Function Set-PSDWizardStringLength {
     .PARAMETER Length
         Target length for the string
     .PARAMETER TrimDirection
-        Direction to trim/pad from: 'Left' or 'Right' (default: 'Right')
+        Direction to trim/pad from: 'Left' or 'Right' (default: 'Right'). Right keeps the leftmost characters; Left keeps the rightmost characters.
     .OUTPUTS
         [string] Adjusted string
     .EXAMPLE
@@ -2862,8 +2993,8 @@ Function Expand-PSDWizardString {
         - %{TSEnvVar}% - Any Task Sequence variable
 
         Supports truncation syntax:
-        - %SERIAL:5% - Take first 5 characters from right
-        - %5:SERIAL% - Take first 5 characters from left
+        - %SERIAL:5% - Keep the first 5 characters; trim from the right
+        - %5:SERIAL% - Keep the last 5 characters; trim from the left
         - n:VARIABLE or VARIABLE:n formats supported
     .PARAMETER InputString
         String containing variables to expand
@@ -3047,8 +3178,8 @@ Function Test-PSDWizardApplicationExist {
 
     try {
         # Check if running in DevelopmentMode with loaded data
-        if ($script:IsDevelopmentMode -and $script:syncHash.Applications) {
-            $appCount = @($script:syncHash.Applications).Count
+        if ($script:IsDevelopmentMode) {
+            $appCount = if ($script:PSDWizardSyncHash) { @($script:PSDWizardSyncHash.Applications).Count } else { 0 }
             Write-PSDWizardLog -Message "Found $appCount applications in DevelopmentMode" -Component $FunctionName
             return ($appCount -gt 0)
         }
@@ -3201,6 +3332,180 @@ Function Get-PSDWizardSelectedApplications {
     }
 }
 
+Function Get-PSDWizardApplicationDependencies {
+    <#
+    .SYNOPSIS
+        Resolves an application's dependency GUIDs recursively.
+    .DESCRIPTION
+        This function takes an application GUID and a list of application objects, and recursively resolves all dependency GUIDs for the specified application.
+        It returns an array of GUIDs representing all resolved dependencies.
+    .PARAMETER ApplicationGuid
+        The GUID of the application for which to resolve dependencies.
+    .PARAMETER Applications
+        The list of application objects to search for dependencies.
+    .EXAMPLE
+        $dependencies = Get-PSDWizardApplicationDependencies -ApplicationGuid "dcc7f082-fa8b-4a3d-9765-923d594f9367" -Applications $allApplications
+        This example retrieves all dependency GUIDs for the specified application.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [string]$ApplicationGuid,
+
+        [Parameter(Mandatory=$true)]
+        [object[]]$Applications
+    )
+
+    $FunctionName = $MyInvocation.MyCommand.Name
+    Write-PSDWizardLog -Message "Resolving dependencies for application '$ApplicationGuid' against $(@($Applications).Count) catalog entries" -Component $FunctionName
+
+    $byGuid = @{}
+    # Build a lookup table by application GUID for quick access to application objects
+    foreach ($application in @($Applications)) {
+        if ($application.guid) { $byGuid[[string]$application.guid] = $application }
+    }
+
+    # Initialize collections for resolved dependencies, visited nodes, and the processing queue
+    $resolved = [System.Collections.Generic.List[string]]::new()
+    $visited = @{}
+    $queue = [System.Collections.Queue]::new()
+    $queue.Enqueue([string]$ApplicationGuid)
+
+    # Process the queue to resolve all dependencies recursively
+    while ($queue.Count -gt 0) {
+        $currentGuid = [string]$queue.Dequeue()
+        if ($visited.ContainsKey($currentGuid)) { continue }
+        $visited[$currentGuid] = $true
+
+        # Skip processing if the current GUID is not in the lookup table
+        if (-not $byGuid.ContainsKey($currentGuid)) {
+            Write-PSDWizardLog -Message "Dependency GUID '$currentGuid' was not found in the application catalog" -LogLevel 2 -Component $FunctionName
+            continue
+        }
+        # Iterate over each dependency node for the current application
+        foreach ($dependencyNode in @($byGuid[$currentGuid].SelectNodes('./Dependency'))) {
+            # Extract the dependency GUID from the current dependency node
+            $dependencyGuid = [string]$dependencyNode.InnerText
+            if ([string]::IsNullOrWhiteSpace($dependencyGuid)) {
+                Write-PSDWizardLog -Message "Application '$currentGuid' contains an empty dependency entry" -LogLevel 2 -Component $FunctionName
+                continue
+            }
+            if ($visited.ContainsKey($dependencyGuid)) {
+                Write-PSDWizardLog -Message "Skipping already visited dependency '$dependencyGuid' while resolving '$ApplicationGuid'" -Component $FunctionName
+                continue
+            }
+            if (-not $resolved.Contains($dependencyGuid)) { $resolved.Add($dependencyGuid) }
+            Write-PSDWizardLog -Message "Resolved dependency '$dependencyGuid' from '$currentGuid'" -Component $FunctionName
+            $queue.Enqueue($dependencyGuid)
+        }
+    }
+
+    Write-PSDWizardLog -Message "Resolved $($resolved.Count) dependencies for application '$ApplicationGuid'" -Component $FunctionName
+    return [string[]]$resolved
+}
+
+Function Get-PSDWizardApplicationDisplayItems {
+    <#
+    .SYNOPSIS
+        Builds application ListBox rows, including selected hidden dependencies.
+    .DESCRIPTION
+        Builds a collection of application display items for the ListBox, including handling selected hidden dependencies.
+        The function takes a synchronization hash containing the application catalog and visible applications, a list of selected GUIDs, a list of mandatory GUIDs,
+        and an optional dependency resolver script block. It returns an array of objects representing the display items for the ListBox.
+    .PARAMETER SyncHash
+        A hashtable containing the application catalog and visible applications.
+    .PARAMETER SelectedGuids
+        An array of GUIDs representing the initially selected applications.
+    .PARAMETER MandatoryGuids
+        An array of GUIDs representing applications that must always be selected.
+    .PARAMETER DependencyResolver
+        An optional script block used to resolve application dependencies.
+    .EXAMPLE
+        $displayItems = Get-PSDWizardApplicationDisplayItems -SyncHash $syncHash -SelectedGuids $selectedGuids -MandatoryGuids $mandatoryGuids -DependencyResolver $resolver
+        This example retrieves the display items for the ListBox, including handling selected hidden dependencies.
+    #>
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash,
+
+        [Parameter(Mandatory=$false)]
+        [string[]]$SelectedGuids = @(),
+
+        [Parameter(Mandatory=$false)]
+        [string[]]$MandatoryGuids = @(),
+
+        [Parameter(Mandatory=$false)]
+        [scriptblock]$DependencyResolver
+    )
+    $FunctionName = $MyInvocation.MyCommand.Name
+    # Initialize the display catalog with visible applications
+    $catalog = @($SyncHash.ApplicationCatalog)
+    $visible = @($SyncHash.Applications)
+    Write-PSDWizardLog -Message "Building application display rows: catalog=$($catalog.Count), visible=$($visible.Count), selected=$(@($SelectedGuids).Count), mandatory=$(@($MandatoryGuids).Count)" -Component $FunctionName
+    $selected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    # Mark all selected and mandatory GUIDs as selected
+    foreach ($guid in @($SelectedGuids) + @($MandatoryGuids)) {
+        if (-not [string]::IsNullOrWhiteSpace($guid)) { [void]$selected.Add([string]$guid) }
+    }
+
+    # Initialize the set of required dependencies for the selected applications
+    $requiredByBundle = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    # Iterate over each selected application to determine its dependencies
+    foreach ($guid in @($selected)) {
+        $application = @($catalog | Where-Object { [string]$_.guid -ieq $guid }) | Select-Object -First 1
+        # Check if the application has any dependencies defined in the catalog
+        if ($application -and @($application.SelectNodes('./Dependency')).Count -gt 0) {
+            # Determine the dependencies for the current application either via the provided dependency resolver or the default method
+            $dependencies = if ($DependencyResolver) {
+                & $DependencyResolver -ApplicationGuid $guid -Applications $catalog
+            }
+            else {
+                Get-PSDWizardApplicationDependencies -ApplicationGuid $guid -Applications $catalog
+            }
+            # Add each dependency to the selected set and mark it as required by the bundle
+            foreach ($dependencyGuid in @($dependencies)) {
+                [void]$selected.Add($dependencyGuid)
+                [void]$requiredByBundle.Add($dependencyGuid)
+            }
+            Write-PSDWizardLog -Message "Application '$guid' contributed $(@($dependencies).Count) dependency selections" -Component $FunctionName
+        }
+    }
+
+    # Build the display catalog by including visible applications and any selected dependencies
+    $displayCatalog = @($visible)
+    foreach ($guid in @($selected)) {
+        # Retrieve the application object from the catalog based on the current GUID
+        $application = @($catalog | Where-Object { [string]$_.guid -ieq $guid }) | Select-Object -First 1
+        if ($application -and -not (@($displayCatalog | Where-Object { [string]$_.guid -ieq $guid }).Count)) {
+            $displayCatalog += $application
+        }
+    }
+
+    $hiddenDependencyCount = 0
+    # Count and log hidden dependencies in the display catalog
+    foreach ($application in $displayCatalog) {
+        $isHiddenDependency = ([string]$application.hide -ieq 'True') -and $requiredByBundle.Contains([string]$application.guid)
+        if ($isHiddenDependency) { $hiddenDependencyCount++ }
+        Write-PSDWizardLog -Message "Application row '$($application.Name)': selected=$($selected.Contains([string]$application.guid)), hiddenDependency=$isHiddenDependency" -Component $FunctionName
+        [PSCustomObject]@{
+            guid = [string]$application.guid
+            Name = [string]$application.Name
+            DisplayName = if ($isHiddenDependency) { "$($application.Name) (required by bundle)" } else { [string]$application.Name }
+            ShortName = if ($application.ShortName) { [string]$application.ShortName } else { [string]$application.Name }
+            Version = if ($application.Version) { [string]$application.Version } else { '' }
+            Publisher = if ($application.Publisher) { [string]$application.Publisher } else { '' }
+            Selected = $selected.Contains([string]$application.guid)
+            IsMandatory = $MandatoryGuids -contains [string]$application.guid
+            IsRequiredDependency = $isHiddenDependency
+            IsSelectable = -not $isHiddenDependency
+        }
+    }
+    Write-PSDWizardLog -Message "Built $($displayCatalog.Count) application display rows; hidden dependency rows=$hiddenDependencyCount" -Component $FunctionName
+}
+
 #endregion
 
 #region TASK SEQUENCE FUNCTIONS
@@ -3283,6 +3588,10 @@ Function Export-PSDWizardTaskSequence {
 }
 
 Function Update-PSDWizardTaskSequenceRules {
+    <#
+    .SYNOPSIS
+        Applies the selected Task Sequence settings and refreshes dependent wizard state.
+    #>
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory=$true)]
@@ -3501,11 +3810,12 @@ Function Update-PSDWizardTaskSequenceRules {
     $visibleApplicationGuids = @($selectedApplicationGuids + $mandatoryApplicationGuids | Select-Object -Unique)
     # Store the mandatory application GUIDs and the visible applications in the script-level hash for later use
     $SyncHash.MandatoryApplicationGuids = $mandatoryApplicationGuids
+    $visibleCatalog = if ($SyncHash.VisibleApplicationCatalog) { @($SyncHash.VisibleApplicationCatalog) } else { @($SyncHash.ApplicationCatalog | Where-Object { $_.hide -ne 'True' }) }
     $SyncHash.Applications = if ($sectionApplicationKeys.Count -gt 0) {
         @($SyncHash.ApplicationCatalog | Where-Object { $_.guid -in $visibleApplicationGuids })
     }
     else {
-        @($SyncHash.ApplicationCatalog)
+        $visibleCatalog
     }
 
     # Find the application control in the UI and update its items based on the current application catalog and visibility settings
@@ -3520,8 +3830,16 @@ Function Update-PSDWizardTaskSequenceRules {
             # Clear the existing items in the application control before adding the updated items
             $applicationControl.ItemsSource = $null
             $applicationControl.Items.Clear()
-            # Add each application from the catalog to the application control, marking it as selected if it is visible
-            foreach ($application in $SyncHash.Applications) {
+            if ($applicationControl.GetType().Name -eq 'ListBox') {
+                $displayItems = @(Get-PSDWizardApplicationDisplayItems -SyncHash $SyncHash -SelectedGuids $visibleApplicationGuids -MandatoryGuids $mandatoryApplicationGuids)
+                foreach ($item in $displayItems) {
+                    $applicationControl.Items.Add($item) | Out-Null
+                    if ($item.Selected) { $applicationControl.SelectedItems.Add($item) | Out-Null }
+                }
+            }
+            else {
+                # Add each application from the catalog to the application control, marking it as selected if it is visible
+                foreach ($application in $SyncHash.Applications) {
                 # Create a new item for the application control based on the current application and its visibility status
                 $item = [PSCustomObject]@{
                     guid = $application.guid
@@ -3532,9 +3850,10 @@ Function Update-PSDWizardTaskSequenceRules {
                     IsMandatory = $application.guid -in $mandatoryApplicationGuids
                 }
                 # Add the new item to the application control and select it if it is visible
-                $applicationControl.Items.Add($item) | Out-Null
-                if ($item.guid -in $visibleApplicationGuids) {
-                    $applicationControl.SelectedItems.Add($item) | Out-Null
+                    $applicationControl.Items.Add($item) | Out-Null
+                    if ($item.guid -in $visibleApplicationGuids) {
+                        $applicationControl.SelectedItems.Add($item) | Out-Null
+                    }
                 }
             }
         }
@@ -3542,7 +3861,11 @@ Function Update-PSDWizardTaskSequenceRules {
             $SyncHash.IsRefreshingTaskSequenceRules = $false
         }
     }
-
+    # Update dependent control selections based on the current state
+    Update-PSDWizardDependentControlSelections -Window $Window -SyncHash $SyncHash
+    # Update the visibility of all pages and initialize the role feature list based on the current state
+    Update-PSDWizardPageVisibility -Window $Window -SyncHash $SyncHash
+    # Initialize the role feature list based on the current state
     Initialize-PSDWizardRoleFeatureList -Window $Window -SyncHash $SyncHash
 
     Write-PSDWizardLog -Message "Task Sequence '$TaskSequenceID' rules applied; JoinDomain=$(-not [string]::IsNullOrWhiteSpace($script:SavedJoinDomain)), JoinWorkgroup=$(-not [string]::IsNullOrWhiteSpace($script:SavedJoinWorkgroup)), OUs=$($ouValues.Count), Applications=$($SyncHash.Applications.Count)" -Component $FunctionName
@@ -3954,16 +4277,26 @@ Function Format-PSDWizard {
         $paneElements = Get-PSDWizardDefinitions -Xml $LangDefinition -Section 'Pane'
         $tabItems = ''
         $tabCount = 0
+        $deferredPaneIds = @()
+        $taskSequenceSeen = $false
+        $interactiveTaskSequence = [string]$TSEnvSettings['SkipTaskSequence'] -ine 'YES'
 
         # Initialize tab items and count before processing each pane
         foreach ($pane in $paneElements) {
-            # Evaluate conditions
+            if ([string]$pane.id -eq 'TaskSequence') {
+                $taskSequenceSeen = $true
+            }
+
+            # Keep later panes available for condition reevaluation after an interactive TS choice.
+            $deferConditions = $taskSequenceSeen -and ([string]$pane.id -ne 'TaskSequence') -and $interactiveTaskSequence
             $include = $true
-            foreach ($condition in ($pane.Condition.'#cdata-section' | Where-Object { $_ })) {
-                if (-not (Get-PSDWizardCondition -Condition $condition -TSEnvSettings $TSEnvSettings)) {
-                    $include = $false
-                    Write-PSDWizardLog -Message "Pane '$($pane.Title)' excluded by condition" -Component $FunctionName
-                    break
+            if (-not $deferConditions) {
+                foreach ($condition in ($pane.Condition.'#cdata-section' | Where-Object { $_ })) {
+                    if (-not (Get-PSDWizardCondition -Condition $condition -TSEnvSettings $TSEnvSettings)) {
+                        $include = $false
+                        Write-PSDWizardLog -Message "Pane '$($pane.Title)' excluded by condition" -Component $FunctionName
+                        break
+                    }
                 }
             }
 
@@ -4032,6 +4365,11 @@ Function Format-PSDWizard {
                     $tabContent = $tabContent -replace $match.Value, $value
                 }
             }
+
+            if ($deferConditions) {
+                $deferredPaneIds += [string]$pane.id
+            }
+
             # Append the processed tab content to the collection of tab items
             $tabItems += $tabContent
         }
@@ -4048,6 +4386,17 @@ Function Format-PSDWizard {
 
         # Convert to XML
         [xml]$xamlUI = $xamlContent
+        if ($deferredPaneIds.Count -gt 0) {
+            $xamlNamespace = 'http://schemas.microsoft.com/winfx/2006/xaml'
+            foreach ($paneId in $deferredPaneIds) {
+                foreach ($tabNode in $xamlUI.GetElementsByTagName('TabItem')) {
+                    if ($tabNode.GetAttribute('Name') -eq "_wiz$paneId") {
+                        $tabNode.SetAttribute('Visibility', 'Collapsed')
+                        break
+                    }
+                }
+            }
+        }
 
         Write-PSDWizardLog -Message "XAML generation complete" -Component $FunctionName
 
@@ -4065,6 +4414,10 @@ Function Format-PSDWizard {
 }
 
 Function Get-PSDWizardVisibleTabIndices {
+    <#
+    .SYNOPSIS
+        Returns the indexes of panes that are currently visible.
+    #>
     [CmdletBinding()]
     [OutputType([int[]])]
     Param(
@@ -4083,6 +4436,10 @@ Function Get-PSDWizardVisibleTabIndices {
 }
 
 Function Update-PSDWizardNavigationState {
+    <#
+    .SYNOPSIS
+        Updates Back, Next, and Finish state for the visible wizard panes.
+    #>
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory=$true)]
@@ -4124,6 +4481,10 @@ Function Update-PSDWizardNavigationState {
 }
 
 Function Test-PSDWizardPageValidation {
+    <#
+    .SYNOPSIS
+        Validates the active wizard page before navigation.
+    #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     Param(
@@ -4507,6 +4868,11 @@ Function Invoke-PSDWizard {
                                     $value = $value -join ', '
                                 }
 
+                                # Never expose password or credential values in summaries or export previews.
+                                if ([string]$key -match '(?i)(password|passwd|secret|credential)') {
+                                    $value = '********'
+                                }
+
                                 # Only include properties with values
                                 if (-not [string]::IsNullOrWhiteSpace($value)) {
                                     # Special handling for Applications - show names instead of GUIDs
@@ -4707,6 +5073,11 @@ Function Invoke-PSDWizard {
                             # Handle arrays (like IPAddress, DefaultGateway)
                             if ($value -is [array]) {
                                 $value = $value -join ', '
+                            }
+
+                            # Never expose password or credential values in summaries or export previews.
+                            if ([string]$key -match '(?i)(password|passwd|secret|credential)') {
+                                $value = '********'
                             }
 
                             # Only include properties with values
@@ -4916,6 +5287,11 @@ Function Invoke-PSDWizard {
                                     # Handle arrays (like IPAddress, DefaultGateway)
                                     if ($value -is [array]) {
                                         $value = $value -join ', '
+                                    }
+
+                                    # Never expose password or credential values in the Summary ListView.
+                                    if ([string]$key -match '(?i)(password|passwd|secret|credential)') {
+                                        $value = '********'
                                     }
 
                                     # Only add if value is not null or empty
@@ -5196,35 +5572,32 @@ Function Initialize-PSDWizardData {
                             }, [System.Windows.Threading.DispatcherPriority]::Background)
                         }
 
-                        # Also add TextChanged handler dynamically (like v2.3.6)
-                        $sender.AddHandler(
-                            [System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent,
-                            [System.Windows.RoutedEventHandler] {
-                                param($s, $ev)
-                                $w = [System.Windows.Window]::GetWindow($s)
-                                $info = $s.Tag
-
-                                if ($info -and $w) {
-                                    if ($info.UpdateNextButton) {
-                                        Invoke-PSDWizardFieldValidation -Window $w -ControlName $s.Name -ValidationCanvasName $info.ValidationCanvas -UpdateNextButton
-                                    }
-                                    else {
-                                        Invoke-PSDWizardFieldValidation -Window $w -ControlName $s.Name -ValidationCanvasName $info.ValidationCanvas
-                                    }
-
-                                    # For domain-related fields, also trigger comprehensive domain validation
-                                    # This ensures ALL domain requirements are met before allowing navigation
-                                    if ($s.Name -match 'TSEnv_JoinDomain|TSEnv_DomainAdmin|TSEnv_DomainAdminDomain') {
-                                        # Use a slight delay to allow individual field validation to complete first
-                                        [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeAsync([Action]{
-                                            Confirm-PSDWizardDomainRequirements -Window $w -UpdateNextButton
-                                        }, [System.Windows.Threading.DispatcherPriority]::Background)
-                                    }
-                                }
-                            }
-                        )
                     }
                 })
+
+                # Register once so validation also runs on preloaded values and before focus changes.
+                if ($control.Name -match 'TSEnv_JoinDomain|TSEnv_DomainAdmin|TSEnv_DomainAdminDomain') {
+                    $control.AddHandler(
+                        [System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent,
+                        [System.Windows.RoutedEventHandler] {
+                            param($sender, $e)
+                            $wnd = [System.Windows.Window]::GetWindow($sender)
+                            $fieldInfo = $sender.Tag
+                            if (-not $fieldInfo -or -not $wnd) { return }
+
+                            if ($fieldInfo.UpdateNextButton) {
+                                Invoke-PSDWizardFieldValidation -Window $wnd -ControlName $sender.Name -ValidationCanvasName $fieldInfo.ValidationCanvas -UpdateNextButton
+                            }
+                            else {
+                                Invoke-PSDWizardFieldValidation -Window $wnd -ControlName $sender.Name -ValidationCanvasName $fieldInfo.ValidationCanvas
+                            }
+
+                            [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeAsync([Action]{
+                                Confirm-PSDWizardDomainRequirements -Window $wnd -UpdateNextButton
+                            }, [System.Windows.Threading.DispatcherPriority]::Background)
+                        }
+                    )
+                }
 
                 Write-PSDWizardLog -Message "Added GotFocus/TextChanged validation handler for $($field.ControlName)" -Component $FunctionName
             }
@@ -5814,20 +6187,13 @@ SelectedItem
                     $appControl.ItemsSource = $null
                     $appControl.Items.Clear()
 
-                    foreach ($app in $SyncHash.Applications) {
-                        $item = New-Object PSObject -Property @{
-                            guid = $app.guid
-                            Name = $app.Name
-                            ShortName = if ($app.ShortName) { $app.ShortName } else { $app.Name }
-                            Version = if ($app.Version) { $app.Version } else { '' }
-                            Publisher = if ($app.Publisher) { $app.Publisher } else { '' }
-                            Selected = $false
-                        }
+                    $selectedAppGuids = @($SyncHash.TSEnvSettings.Keys | Where-Object { $_ -match '^Applications\d{3}$' } | ForEach-Object { [string]$SyncHash.TSEnvSettings[$_] } | Where-Object { $_ })
+                    $mandatoryAppGuids = @($SyncHash.TSEnvSettings.Keys | Where-Object { $_ -match '^MandatoryApplications\d{3}$' } | ForEach-Object { [string]$SyncHash.TSEnvSettings[$_] } | Where-Object { $_ })
+                    $appDisplayItems = @(Get-PSDWizardApplicationDisplayItems -SyncHash $SyncHash -SelectedGuids $selectedAppGuids -MandatoryGuids $mandatoryAppGuids)
+
+                    foreach ($item in $appDisplayItems) {
                         $appControl.Items.Add($item) | Out-Null
                     }
-
-                    # Set DisplayMemberPath to show application name
-                    $appControl.DisplayMemberPath = 'Name'
 
                     Write-PSDWizardLog -Message "Populated $($appControl.Items.Count) applications into ListBox $controlName" -Component $FunctionName
 
@@ -5857,6 +6223,8 @@ SelectedItem
                                 }
                             }
                         }
+
+                        $selectedAppGuids = @($selectedAppGuids + @($appDisplayItems | Where-Object { $_.Selected } | ForEach-Object { $_.guid }) | Select-Object -Unique)
 
                         # Preselect applications in the ListBox
                         if ($selectedAppGuids.Count -gt 0) {
@@ -6824,6 +7192,11 @@ SelectedItem
                         $value = '<empty>'
                     }
 
+                    # Never expose password or credential values in the Summary ListView.
+                    if ([string]$name -match '(?i)(password|passwd|secret|credential)') {
+                        $value = '********'
+                    }
+
                     # Special handling for Applications - show names instead of GUIDs
                     if ($name -match '^(Applications|MandatoryApplications)\d{3}$' -and $SyncHash.Applications) {
                         # Look up the application name from GUID
@@ -7135,7 +7508,9 @@ SelectedItem
         else {
             Write-PSDWizardLog -Message "ResourcePath not found in SyncHash - skipping readiness checks" -LogLevel 1 -Component $FunctionName
         }
-
+        # Update the visibility of all pages based on the current state
+        Update-PSDWizardPageVisibility -Window $Window -SyncHash $SyncHash
+        # Initialize the role feature list based on the current state
         Initialize-PSDWizardRoleFeatureList -Window $Window -SyncHash $SyncHash
 
         Write-PSDWizardLog -Message "Data initialization complete" -Component $FunctionName
@@ -7445,6 +7820,118 @@ Function Register-PSDWizardTaskSequenceHandlers {
     }
 }
 
+Function Get-PSDWizardApplicationBundles {
+    <#
+    .SYNOPSIS
+        Returns enabled applications that contain dependency entries.
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$false)]
+        [object[]]$Applications = @()
+    )
+
+    $FunctionName = $MyInvocation.MyCommand.Name
+    Write-PSDWizardLog -Message "Scanning $(@($Applications).Count) application catalog entries for dependency bundles" -Component $FunctionName
+    $bundleCount = 0
+    foreach ($application in @($Applications)) {
+        $dependencyNodes = @($application.SelectNodes('./Dependency'))
+        if ($dependencyNodes.Count -gt 0) {
+            $bundleCount++
+            Write-PSDWizardLog -Message "Found bundle '$($application.Name)' [$($application.guid)] with $($dependencyNodes.Count) direct dependencies" -Component $FunctionName
+            [PSCustomObject]@{
+                guid = [string]$application.guid
+                DisplayName = if ($application.DisplayName) { [string]$application.DisplayName } else { [string]$application.Name }
+                Name = [string]$application.Name
+                DependencyCount = $dependencyNodes.Count
+            }
+        }
+    }
+    Write-PSDWizardLog -Message "Application bundle scan complete: $bundleCount bundles found" -Component $FunctionName
+}
+
+Function Set-PSDWizardApplicationBundleSelection {
+    <#
+    .SYNOPSIS
+        Selects a bundle and its dependency GUIDs in the application list.
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [System.Windows.Window]$Window,
+
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash,
+
+        [Parameter(Mandatory=$true)]
+        [string]$BundleGuid,
+
+        [Parameter(Mandatory=$false)]
+        [scriptblock]$DependencyResolver,
+
+        [Parameter(Mandatory=$false)]
+        [scriptblock]$DisplayBuilder,
+
+        [Parameter(Mandatory=$false)]
+        [scriptblock]$ApplicationExporter
+    )
+
+    $FunctionName = $MyInvocation.MyCommand.Name
+    Write-PSDWizardLog -Message "Applying application bundle '$BundleGuid'" -Component $FunctionName
+    $applicationControl = @('_appTabList', '_appTabDatagrid', '_lstApplications', '_dgApplications') | ForEach-Object {
+        $Window.FindName($_)
+    } | Where-Object { $_ } | Select-Object -First 1
+    if (-not $applicationControl -or $applicationControl.GetType().Name -ne 'ListBox') {
+        Write-PSDWizardLog -Message "Cannot apply bundle '$BundleGuid': application ListBox was not found" -LogLevel 2 -Component $FunctionName
+        return
+    }
+
+    $selectedGuids = @($applicationControl.Items | Where-Object { $_.Selected } | ForEach-Object { [string]$_.guid })
+    $mandatoryGuids = @($SyncHash.MandatoryApplicationGuids)
+    if ($SyncHash.TSEnvSettings) {
+        $mandatoryGuids += @($SyncHash.TSEnvSettings.Keys | Where-Object { $_ -match '^MandatoryApplications\d{3}$' } | ForEach-Object { [string]$SyncHash.TSEnvSettings[$_] })
+    }
+
+    $selectedGuids += [string]$BundleGuid
+    $dependencies = if ($DependencyResolver) {
+        & $DependencyResolver -ApplicationGuid $BundleGuid -Applications $SyncHash.ApplicationCatalog
+    }
+    else {
+        Get-PSDWizardApplicationDependencies -ApplicationGuid $BundleGuid -Applications $SyncHash.ApplicationCatalog
+    }
+    $selectedGuids += @($dependencies)
+    $selectedGuids = @($selectedGuids + $mandatoryGuids | Where-Object { $_ } | Select-Object -Unique)
+    Write-PSDWizardLog -Message "Bundle '$BundleGuid' resolved $(@($dependencies).Count) dependencies; total selected GUIDs including mandatory=$($selectedGuids.Count)" -Component $FunctionName
+    $displayItems = if ($DisplayBuilder) {
+        @(& $DisplayBuilder -SyncHash $SyncHash -SelectedGuids $selectedGuids -MandatoryGuids $mandatoryGuids -DependencyResolver $DependencyResolver)
+    }
+    else {
+        @(Get-PSDWizardApplicationDisplayItems -SyncHash $SyncHash -SelectedGuids $selectedGuids -MandatoryGuids $mandatoryGuids -DependencyResolver $DependencyResolver)
+    }
+
+    $SyncHash.IsRefreshingApplicationBundle = $true
+    try {
+        $applicationControl.Items.Clear()
+        foreach ($item in $displayItems) {
+            $applicationControl.Items.Add($item) | Out-Null
+            if ($item.Selected) { $applicationControl.SelectedItems.Add($item) | Out-Null }
+        }
+        $exportedGuids = @($displayItems | Where-Object { $_.Selected } | ForEach-Object { [string]$_.guid })
+        if ($ApplicationExporter) {
+            & $ApplicationExporter -SelectedApplications $exportedGuids | Out-Null
+        }
+        else {
+            Export-PSDWizardApplication -SelectedApplications $exportedGuids | Out-Null
+        }
+        $selectedRows = @($displayItems | Where-Object { $_.Selected })
+        $hiddenRows = @($selectedRows | Where-Object { $_.IsRequiredDependency })
+        Write-PSDWizardLog -Message "Selected application bundle '$BundleGuid' with $($selectedRows.Count) application rows ($($hiddenRows.Count) hidden dependencies); exported $($exportedGuids.Count) GUIDs" -Component $FunctionName
+    }
+    finally {
+        $SyncHash.IsRefreshingApplicationBundle = $false
+    }
+}
+
 Function Register-PSDWizardApplicationHandlers {
     <#
     .SYNOPSIS
@@ -7470,12 +7957,35 @@ Function Register-PSDWizardApplicationHandlers {
     Write-PSDWizardLog -Message "Wiring up Applications page handlers..." -Component $FunctionName
 
     try {
-        # TODO: Add application page specific handlers here
-        # - Search textbox
-        # - Select All / Select None buttons
-        # - Application bundles dropdown
+        $bundleControl = $Window.FindName('_appBundlesCmb')
+        $applicationControl = @('_appTabList', '_appTabDatagrid', '_lstApplications', '_dgApplications') | ForEach-Object {
+            $Window.FindName($_)
+        } | Where-Object { $_ } | Select-Object -First 1
 
-        Write-PSDWizardLog -Message "Applications page handlers registered successfully (placeholder)" -Component $FunctionName
+        if ($bundleControl) {
+            $bundleControl.Items.Clear()
+            $bundleControl.Items.Add([PSCustomObject]@{ DisplayName = 'Custom selection'; guid = '' }) | Out-Null
+            foreach ($bundle in @(Get-PSDWizardApplicationBundles -Applications $SyncHash.ApplicationCatalog)) {
+                $bundleControl.Items.Add($bundle) | Out-Null
+            }
+            $bundleControl.DisplayMemberPath = 'DisplayName'
+            $bundleControl.SelectedIndex = 0
+
+            $dependencyResolver = ${function:Get-PSDWizardApplicationDependencies}.GetNewClosure()
+            $displayBuilder = ${function:Get-PSDWizardApplicationDisplayItems}.GetNewClosure()
+            $applicationExporter = ${function:Export-PSDWizardApplication}.GetNewClosure()
+            $bundleSelectionAction = ${function:Set-PSDWizardApplicationBundleSelection}.GetNewClosure()
+            $bundleSelectionHandler = {
+                param($sender, $e)
+                $bundle = $sender.SelectedItem
+                if ($bundle -and $bundle.guid -and -not $SyncHash.IsRefreshingApplicationBundle) {
+                    & $bundleSelectionAction -Window $Window -SyncHash $SyncHash -BundleGuid ([string]$bundle.guid) -DependencyResolver $dependencyResolver -DisplayBuilder $displayBuilder -ApplicationExporter $applicationExporter
+                }
+            }.GetNewClosure()
+            $bundleControl.Add_SelectionChanged($bundleSelectionHandler)
+        }
+
+        Write-PSDWizardLog -Message "Applications page handlers registered successfully; bundles=$(@(Get-PSDWizardApplicationBundles -Applications $SyncHash.ApplicationCatalog).Count), applicationRows=$(@($applicationControl.Items).Count)" -Component $FunctionName
     }
     catch {
         Write-PSDWizardLog -Message "Error registering Applications handlers: $($_.Exception.Message)" -LogLevel 2 -Component $FunctionName
@@ -7587,6 +8097,10 @@ Function Import-PSDWizardCustomSettings {
 }
 
 Function Get-PSDWizardApplicationProfileGuids {
+    <#
+    .SYNOPSIS
+        Resolves eligible application GUIDs for a wizard selection profile.
+    #>
         [CmdletBinding()]
         Param(
             [Parameter(Mandatory=$true)]
@@ -7764,6 +8278,10 @@ Function Get-PSDWizardApplicationProfileGuids {
     }
 
     Function Get-PSDWizardNumberedTSEnvLists {
+        <#
+        .SYNOPSIS
+            Collects numbered Task Sequence environment properties into named lists.
+        #>
         [CmdletBinding()]
         Param(
             [Parameter(Mandatory=$false)]
@@ -7846,6 +8364,7 @@ Function Import-PSDWizardControlData {
     # Initialize the data hashtable for storing control folder information
     $data = @{
         Applications = @()
+        ApplicationCatalog = @()
         ApplicationGroups = @()
         TaskSequences = @()
         TaskSequenceGroups = @()
@@ -7876,17 +8395,15 @@ Function Import-PSDWizardControlData {
             # Get all members of the enabled groups
             $enabledGroupMembers = @($enabledGroups | ForEach-Object { $_.Member }) | Where-Object { $_ }
 
-            # Filter: enable="True" AND hide != "True" AND in enabled group
-            $data.Applications = @($allApps | Where-Object {
-                # Determine if the application entry is enabled, visible, and in an enabled group
+            # Keep enabled applications available for dependency resolution, then hide normal hidden rows from the UI list.
+            $data.ApplicationCatalog = @($allApps | Where-Object {
                 $isEnabled = ($_.enable -eq 'True') -or ([string]::IsNullOrEmpty($_.enable))
-                $isVisible = ($_.hide -ne 'True')
-                # Determine if the application entry is in an enabled group
                 $inEnabledGroup = ($enabledGroupMembers.Count -eq 0) -or ($_.guid -in $enabledGroupMembers)
-                $isEnabled -and $isVisible -and $inEnabledGroup
+                $isEnabled -and $inEnabledGroup
             })
+            $data.Applications = @($data.ApplicationCatalog | Where-Object { $_.hide -ne 'True' })
 
-            Write-PSDWizardLog -Message "Loaded $($data.Applications.Count) visible applications (filtered from $($allApps.Count) total)" -Component $FunctionName
+            Write-PSDWizardLog -Message "Loaded $($data.Applications.Count) visible applications and $($data.ApplicationCatalog.Count) catalog applications (filtered from $($allApps.Count) total)" -Component $FunctionName
         }
 
         # build path for TaskSequenceGroups.xml
@@ -8072,7 +8589,17 @@ Function Show-PSDWizard {
 
         # Cache pane validations so navigation can validate the active page.
         $syncHash.PaneValidations = @{}
+        $syncHash.DynamicPaneConditions = @{}
+        $afterTaskSequence = $false
         foreach ($paneDefinition in @($langDefinition.Wizard.Pane)) {
+            if ([string]$paneDefinition.id -eq 'TaskSequence') {
+                $afterTaskSequence = $true
+            }
+            elseif ($afterTaskSequence) {
+                $paneConditions = @($paneDefinition.Condition | ForEach-Object { $_.InnerText } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                $syncHash.DynamicPaneConditions[[string]$paneDefinition.id] = $paneConditions
+            }
+
             $validationExpressions = @($paneDefinition.Validation | ForEach-Object { $_.InnerText } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             if ($validationExpressions.Count -gt 0) {
                 $syncHash.PaneValidations[[string]$paneDefinition.id] = $validationExpressions
@@ -8168,7 +8695,8 @@ Function Show-PSDWizard {
         if ($wizardData.ControlData) {
             $syncHash.ControlPath = $ControlPath
             $syncHash.Applications = $wizardData.ControlData.Applications
-            $syncHash.ApplicationCatalog = $wizardData.ControlData.Applications
+            $syncHash.ApplicationCatalog = if ($wizardData.ControlData.ApplicationCatalog) { $wizardData.ControlData.ApplicationCatalog } else { $wizardData.ControlData.Applications }
+            $syncHash.VisibleApplicationCatalog = $wizardData.ControlData.Applications
             $syncHash.ApplicationGroups = $wizardData.ControlData.ApplicationGroups
             $syncHash.TaskSequences = $wizardData.ControlData.TaskSequences
             $syncHash.TaskSequenceGroups = $wizardData.ControlData.TaskSequenceGroups

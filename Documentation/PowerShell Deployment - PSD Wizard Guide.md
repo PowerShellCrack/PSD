@@ -70,8 +70,8 @@ DeploymentShare
 - **OSDComputerName**: Even though this is a standard MDT variable, the PSD wizard supports some dynamic values:
   - **_%SERIALNUMBER%_**: Replaced with the device's serial number.
   - **_%SERIAL%_**: Replaced with the device's serial number.
-  - **_%SERIAL:\<NUM\>%_**: Replaced with the last **num**bers of the serial number (e.g., %SERIAL:7%).
-  - **_%\<NUM\>:SERIAL%_**: Replaced with the first **num**bers of the serial number (e.g., %7:SERIAL%).
+    - **_%SERIAL:\<NUM\>%_**: Replaced with the first **num**bers of the serial number; characters are trimmed from the right (e.g., %SERIAL:7%).
+    - **_%\<NUM\>:SERIAL%_**: Replaced with the last **num**bers of the serial number; characters are trimmed from the left (e.g., %7:SERIAL%).
   - **_%RAND:\<NUM\>%_**: Replaced with an alphanumeric character of **num**bers (e.g., %RAND:7%).
 
 > NOTE: **AssetTag** property is be developed on

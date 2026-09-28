@@ -20,6 +20,17 @@
 - Derive the DevelopmentMode `Control` folder from `ResourcePath` instead of probing machine-specific drive paths.
 - Normalize DevelopmentMode and production inputs before one shared `SyncHash`/Control-data/locale initialization path.
 - Write Wizard messages to a dedicated `PSDWizardNew.log` alongside the standard PSD log.
+- Preselect locale dropdowns from culture aliases and normalize valid `KeyboardLocale` values to the catalog keyboard layout.
+- Display applications as checkboxes in Classic and Dark themes, with preselected and mandatory applications checked.
+- Evaluate Device Role, Roles and Features, and Applications visibility from the selected Task Sequence's skip properties, then navigate only visible panes.
+- Discover panes after Task Sequence from the language definitions, retain collapsed shells during interactive selection, and reevaluate each pane's XML conditions after selection. Applications visibility also follows the selected Task Sequence and available catalog; navigation skips hidden panes.
+- Allow checkbox-templated application lists to initialize without aborting the remaining wizard setup, including readiness and locale controls.
+- Refresh dependent list, locale, time-zone, and target-disk selections after Task Sequence rules change.
+- Document additional PSDWizardNew helpers and register domain-account validation before focus so valid preloaded accounts are not flagged until the field is revisited.
+- Add dependency-backed application bundle selection from Applications.xml, including preselected locked rows for hidden dependencies.
+- Add bundle diagnostics for discovery, dependency resolution, hidden dependency rows, and exported application GUIDs.
+- Mask password and credential properties in Summary and export-preview fallback data.
+- Bind Roles and Features selections to TSEnv_OptionalOSRoles, TSEnv_OptionalOSRoleServices, and TSEnv_OptionalOSFeatures fields in both themes.
 
 # 2.3.6 - Dec 29, 2024
 
