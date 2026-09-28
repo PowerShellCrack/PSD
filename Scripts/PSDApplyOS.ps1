@@ -99,39 +99,11 @@ Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Creating $scratchPath as
 # Apply the image
 # Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Apply the image"
 Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Applying image $image index $index to $($tsenv:OSVolume)"
-Show-PSDActionProgress -Message "Applying Operating System " -Step "1"
+Show-PSDActionProgress -Message "Applying $($image | Split-Path -Leaf) " -Step "1"
 $startTime = Get-Date
-#Expand-WindowsImage -ImagePath $image -Index $index -ApplyPath "$($tsenv:OSVolume):\" -ScratchDirectory $scratchPath -CheckIntegrity
-
-# DISM is used instead of Expand-WindowsImage so its percentage output can be scraped for the progress UI
-$dismStdOut = "$env:TEMP\dism.stdout"
-$dismStdErr = "$env:TEMP\dism.errout"
-$dismArgs = "/Apply-Image /ImageFile:`"$image`" /Index:$index /ApplyDir:`"$($tsenv:OSVolume):\`" /ScratchDir:`"$scratchPath`" /CheckIntegrity"
-
-$result = Start-Process dism -ArgumentList $dismArgs -PassThru -WindowStyle Hidden `
-    -RedirectStandardError $dismStdErr -RedirectStandardOutput $dismStdOut
-
-while ($result.HasExited -eq $false) {
-    Start-Sleep -Milliseconds 500
-
-    # DISM renders progress as "[=====   45.0%   ]"; stripping non-digits yields 450 out of 1000
-    $lastLine = Get-Content $dismStdOut -ErrorAction SilentlyContinue | Where-Object { $_ -match '\d' } | Select-Object -Last 1
-    $percent = $lastLine -replace '\D', ''
-    if ($percent) {
-        Show-PSDActionProgress -Message "Extracting $($image | Split-Path -Leaf) " -Step $percent -MaxStep 1000
-    }
-}
-$result.WaitForExit()
-
+Expand-WindowsImage -ImagePath $image -Index $index -ApplyPath "$($tsenv:OSVolume):\" -ScratchDirectory $scratchPath -CheckIntegrity
 $duration = $(Get-Date) - $startTime
 Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Time to apply image: $($duration.ToString('hh\:mm\:ss'))"
-
-if ($result.ExitCode -ne 0) {
-    $dismError = (Get-Content $dismStdErr -ErrorAction SilentlyContinue) -join ' '
-    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Unable to continue, DISM failed to apply $image with exit code $($result.ExitCode). $dismError"
-    Show-PSDInfo -Message "Unable to continue, failed to apply the operating system image (DISM exit code $($result.ExitCode))" -Severity Error
-    Exit 1
-}
 
 # Inject drivers using DISM if Setup.exe is missing
 #$ImageFolder = $image | Split-Path | Split-Path
