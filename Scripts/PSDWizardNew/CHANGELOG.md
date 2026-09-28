@@ -29,6 +29,8 @@
 - Document additional PSDWizardNew helpers and register domain-account validation before focus so valid preloaded accounts are not flagged until the field is revisited.
 - Add dependency-backed application bundle selection from Applications.xml, including preselected locked rows for hidden dependencies.
 - Add bundle diagnostics for discovery, dependency resolution, hidden dependency rows, and exported application GUIDs.
+- Hide dependency-bearing bundle parents from the application checklist while preserving the parent and dependencies in Applications### exports and Summary.
+- Synchronize selected application GUIDs to TSEnvList:Applications as well as Applications### properties consumed by Summary.
 - Mask password and credential properties in Summary and export-preview fallback data.
 - Bind Roles and Features selections to TSEnv_OptionalOSRoles, TSEnv_OptionalOSRoleServices, and TSEnv_OptionalOSFeatures fields in both themes.
 

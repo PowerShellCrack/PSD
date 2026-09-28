@@ -829,6 +829,10 @@ else{
     $modules = Get-PSDContent -Content "Tools\Modules"
     $env:PSModulePath = $env:PSModulePath + ";$modules"
 
+    # Cache readiness scripts before PSDWizardNew initializes its readiness page.
+    $readinessResourceFolder = Get-PSDContent -Content "PSDResources\Readiness"
+    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Readiness resources cached at $readinessResourceFolder"
+
     # Process UserExitScripts
     Write-PSDBootInfo -SleepSec 1 -Message "Processing UserExitScripts (if exists)"
     $UserExitScriptFolder = Get-PSDContent -Content "PSDResources\UserExitScripts" -Filter *.ps1

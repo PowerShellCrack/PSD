@@ -16,7 +16,6 @@
     Created: 2020-01-12
     Modified: 2026-09-27
     Version: 3.0.0
-
     VERSION 3.0.0 CHANGES:
         Complete rewrite from scratch with optimized logic
         Runspace-based UI architecture for responsiveness
@@ -2045,32 +2044,57 @@ Function Update-PSDWizardPageVisibility {
         [hashtable]$SyncHash
     )
 
+    $FunctionName = $MyInvocation.MyCommand.Name
+    # Initialize counters for visible, collapsed, and missing panes
+    $visibleCount = 0
+    $collapsedCount = 0
+    $missingCount = 0
+    Write-PSDWizardLog -Message "Evaluating visibility for $(@($SyncHash.DynamicPaneConditions.Keys).Count) dynamic panes; TaskSequenceID='$($SyncHash.TSEnvSettings['TaskSequenceID'])'" -Component $FunctionName
+    # Iterate through each dynamic pane and evaluate its visibility based on the defined conditions
     foreach ($paneId in $SyncHash.DynamicPaneConditions.Keys) {
         $page = $Window.FindName("_wiz$paneId")
-        if (-not $page) { continue }
-
+        # If the page is not found, increment the missing count and continue to the next pane
+        if (-not $page) {
+            $missingCount++
+            continue
+        }
+        # Evaluate each condition for the current pane to determine its visibility
         $showPage = $true
+        # Iterate through each condition for the current pane
         foreach ($condition in $SyncHash.DynamicPaneConditions[$paneId]) {
             if (-not (Get-PSDWizardCondition -Condition $condition -TSEnvSettings $SyncHash.TSEnvSettings)) {
                 $showPage = $false
                 break
             }
         }
-
+        # Set the visibility of the page based on the evaluation of its conditions
         $page.Visibility = if ($showPage) { 'Visible' } else { 'Collapsed' }
-        Write-PSDWizardLog -Message "Pane '$paneId' visibility set to $($page.Visibility) from definition conditions" -Component $MyInvocation.MyCommand.Name
+        # Increment the appropriate counter based on the visibility of the page
+        if ($showPage) { $visibleCount++ } else { $collapsedCount++ }
+        Write-PSDWizardLog -Message "Pane '$paneId' visibility=$($page.Visibility)" -Component $FunctionName
     }
 
     $tabControl = $Window.FindName('_wizTabControl')
     if ($tabControl) {
         Update-PSDWizardNavigationState -Window $Window -TabControl $tabControl
     }
+    Write-PSDWizardLog -Message "Visibility evaluation complete: visible=$visibleCount, collapsed=$collapsedCount, missing=$missingCount" -Component $FunctionName
 }
 
 Function Update-PSDWizardDependentControlSelections {
     <#
     .SYNOPSIS
         Restores dependent control selections after Task Sequence rules change.
+    .DESCRIPTION
+        This function iterates through the Task Sequence environment lists and updates the corresponding control selections
+        in the wizard window based on the saved settings in the $SyncHash.TSEnvSettings hashtable.
+    .PARAMETER Window
+        The wizard window containing the controls to be updated.
+    .PARAMETER SyncHash
+        The hashtable containing the Task Sequence environment settings and lists.
+    .EXAMPLE
+        Update-PSDWizardDependentControlSelections -Window $wizardWindow -SyncHash $syncHash
+        This example updates the dependent control selections in the specified wizard window based on the provided Task Sequence environment settings.
     #>
     [CmdletBinding()]
     Param(
@@ -2081,61 +2105,90 @@ Function Update-PSDWizardDependentControlSelections {
         [hashtable]$SyncHash
     )
 
-    if (-not $SyncHash.TSEnvSettings) { return }
+    $FunctionName = $MyInvocation.MyCommand.Name
+    if (-not $SyncHash.TSEnvSettings) {
+        Write-PSDWizardLog -Message "Dependent-control synchronization skipped: TSEnvSettings unavailable" -LogLevel 2 -Component $FunctionName
+        return
+    }
+    # Initialize counters for list matches, locale matches, time zone matches, and disk match status
+    $listMatches = 0
+    $localeMatches = 0
+    $timeZoneMatches = 0
+    $diskMatched = $false
 
+    # Iterate through each Task Sequence environment list and update the corresponding control selection based on the saved settings.
     foreach ($listName in @($SyncHash.TSEnvLists.Keys)) {
         $control = $Window.FindName("TSEnvList_$listName")
         $value = [string]$SyncHash.TSEnvSettings[$listName]
         if ($control -and $control.PSObject.Properties['SelectedItem'] -and -not [string]::IsNullOrWhiteSpace($value)) {
             $matchingItem = @($control.Items | Where-Object { $_.ToString() -eq $value }) | Select-Object -First 1
-            if ($matchingItem) { $control.SelectedItem = $matchingItem }
+            if ($matchingItem) { $control.SelectedItem = $matchingItem; $listMatches++ }
         }
     }
 
+    # Restore the selections for all Task Sequence environment lists based on the saved settings.
+    # not automatically handled by the previous loop, so we handle locale-specific controls separately.
     $localeMappings = @(
         @{ Names = @('_locTabSystemLocale'); Property = 'SystemLocale' }
         @{ Names = @('_locTabKeyboardLocale'); Property = 'KeyboardLocale' }
         @{ Names = @('_locTabLanguage'); Property = 'UILanguage' }
     )
+    # Iterate through each locale mapping and update the corresponding control selection based on the saved settings.
     foreach ($mapping in $localeMappings) {
         $control = $mapping.Names | ForEach-Object { $Window.FindName($_) } | Where-Object { $_ } | Select-Object -First 1
         $value = [string]$SyncHash.TSEnvSettings[$mapping.Property]
         if (-not $control -or [string]::IsNullOrWhiteSpace($value)) { continue }
-
+        # Find the matching item in the control's items based on the property type and the saved value.
         $matchingItem = if ($mapping.Property -eq 'KeyboardLocale') {
             @($control.Items | Where-Object { $_.KeyboardLayout -ieq $value -or $_.Culture -ieq $value -or $_.Name -ieq $value -or $_.ID -ieq $value -or $_.KeyboardID -ieq $value }) | Select-Object -First 1
         }
         else {
+            # Find the matching item in the control's items based on the saved value for non-keyboard locale properties.
             @($control.Items | Where-Object { $_.Culture -ieq $value -or $_.Name -ieq $value -or $_.Language -ieq $value }) | Select-Object -First 1
         }
-        if ($matchingItem) { $control.SelectedItem = $matchingItem }
+        if ($matchingItem) { $control.SelectedItem = $matchingItem; $localeMatches++ }
     }
 
+    # Set the time zone controls based on the TimeZoneName and TimeZone settings.
     foreach ($propertyName in @('TimeZoneName', 'TimeZone')) {
         $controlName = if ($propertyName -eq 'TimeZoneName') { '_locTabTimeZoneName' } else { '_locTabTimeZone' }
         $control = $Window.FindName($controlName)
         $value = [string]$SyncHash.TSEnvSettings[$propertyName]
+        # Skip this iteration if the control is not found or the value is null or whitespace.
         if ($control -and -not [string]::IsNullOrWhiteSpace($value)) {
             $matchingItem = @($control.Items | Where-Object { $_.TimeZone -ieq $value -or $_.DisplayName -ieq $value -or $_.Name -ieq $value }) | Select-Object -First 1
-            if ($matchingItem) { $control.SelectedItem = $matchingItem }
+            if ($matchingItem) { $control.SelectedItem = $matchingItem; $timeZoneMatches++ }
         }
     }
 
+    # Set the target disk control and value based on the OSDDiskIndex setting.
     $targetDisk = $Window.FindName('_cmbTargetDisk')
     $diskValue = [string]$SyncHash.TSEnvSettings['OSDDiskIndex']
+    # Set the target disk based on the OSDDiskIndex setting.
     if ($targetDisk -and -not [string]::IsNullOrWhiteSpace($diskValue)) {
         $diskIndex = 0
+        # Initialize the disk index to 0 before attempting to parse the disk value.
         if ([int]::TryParse($diskValue, [ref]$diskIndex)) {
             $matchingDisk = @($targetDisk.Items | Where-Object { [int]$_ -eq $diskIndex }) | Select-Object -First 1
-            if ($matchingDisk -ne $null) { $targetDisk.SelectedItem = $matchingDisk }
+            if ($null -ne $matchingDisk) { $targetDisk.SelectedItem = $matchingDisk; $diskMatched = $true }
         }
     }
+    Write-PSDWizardLog -Message "Dependent-control synchronization complete: lists=$listMatches, locales=$localeMatches, timezones=$timeZoneMatches, disk=$diskMatched" -Component $FunctionName
 }
 
 Function Initialize-PSDWizardRoleFeatureList {
     <#
     .SYNOPSIS
         Loads the role and feature catalog for the selected operating system.
+    .DESCRIPTION
+        This function loads the role and feature catalog for the selected operating system into the specified window control.
+    .PARAMETER Window
+        The window object that contains the role and feature list control.
+    .PARAMETER SyncHash
+        The hashtable containing the task sequence environment settings and other relevant data.
+    .EXAMPLE
+        Initialize-PSDWizardRoleFeatureList -Window $mainWindow -SyncHash $syncHash
+        This example demonstrates how to call the function with the required parameters.
     #>
     [CmdletBinding()]
     Param(
@@ -2146,56 +2199,72 @@ Function Initialize-PSDWizardRoleFeatureList {
         [hashtable]$SyncHash
     )
 
+    $FunctionName = $MyInvocation.MyCommand.Name
+    Write-PSDWizardLog -Message "Starting role/feature initialization. ResourcePath='$($SyncHash.ResourcePath)', ControlPath='$($SyncHash.ControlPath)'" -Component $FunctionName
     $featureList = $Window.FindName('_rolesFeatureList')
-    if (-not $featureList) { return }
+    if (-not $featureList) {
+        return
+    }
 
     $featureList.Items.Clear()
+    # Clear the role and feature list before loading new items.
     $status = $Window.FindName('_rolesCatalogStatus')
     if (-not ($SyncHash.TSEnvSettings -and $SyncHash.TSEnvSettings['SkipRoleSelection'] -ieq 'NO')) {
+        Write-PSDWizardLog -Message "Role selection skipped: SkipRoleSelection='$($SyncHash.TSEnvSettings['SkipRoleSelection'])'" -Component $FunctionName
         if ($status) { $status.Text = 'Role selection is skipped for this deployment.' }
         return
     }
 
+    # Determine the task sequence ID from the sync hash. This ID is used to locate the corresponding operating system catalog.
     $taskSequenceId = [string]$SyncHash.TSEnvSettings['TaskSequenceID']
     if ([string]::IsNullOrWhiteSpace($taskSequenceId)) {
+        Write-PSDWizardLog -Message "Cannot initialize role catalog because TaskSequenceID is empty" -LogLevel 2 -Component $FunctionName
         if ($status) { $status.Text = 'Select a Task Sequence to load its operating system catalog.' }
         return
     }
 
+    # Retrieve the operating system GUID associated with the task sequence. This GUID is used to find the corresponding OS metadata.
     $osGuid = Get-PSDWizardTSOSGUID -TaskSequenceID $taskSequenceId -ControlPath $SyncHash.ControlPath
     $selectedOS = @($SyncHash.OperatingSystems | Where-Object { ([string]$_.guid).Trim('{}') -eq ([string]$osGuid).Trim('{}') }) | Select-Object -First 1
     if (-not $selectedOS) {
+        Write-PSDWizardLog -Message "No operating system matched OSGUID '$osGuid' for TaskSequenceID '$taskSequenceId'. OperatingSystems count=$(@($SyncHash.OperatingSystems).Count)" -LogLevel 2 -Component $FunctionName
         if ($status) { $status.Text = "No operating system metadata found for Task Sequence '$taskSequenceId'." }
         return
     }
-
+    # Initialize the catalog path and node variables to null before determining the appropriate catalog based on the OS name
     $osName = @([string]$selectedOS.Name, [string]$selectedOS.Description, [string]$selectedOS.ImageName) -join ' '
     $scriptsPath = if ($SyncHash.ResourcePath) { Split-Path -Parent $SyncHash.ResourcePath } else { $PSScriptRoot }
     $catalogPath = $null
     $catalogNode = $null
-
+    # Initialize the feature nodes array to hold the features for the selected OS role catalog
     if ($osName -match 'Windows 11') {
         $catalogPath = Join-Path $scriptsPath 'Windows11Roles.xml'
         if (Test-Path -LiteralPath $catalogPath) {
+            # Load the XML content of the Windows 11 role catalog into the $catalog variable
             [xml]$catalog = Get-Content -LiteralPath $catalogPath -Raw
             $catalogNode = $catalog.SelectSingleNode('/OSRoles/Roles[@ID="Windows11"]')
             $featureNodes = if ($catalogNode) { @($catalogNode.SelectNodes('./Feature/Feature[@Id]')) } else { @() }
         }
+        else { Write-PSDWizardLog -Message "Windows 11 role catalog was not found at '$catalogPath'" -LogLevel 2 -Component $FunctionName }
     }
     elseif ($osName -match 'Windows Server') {
         $catalogPath = Join-Path $scriptsPath 'ServerManager.xml'
         if (Test-Path -LiteralPath $catalogPath) {
+            # Load the XML content of the Server role catalog into the $catalog variable
             [xml]$catalog = Get-Content -LiteralPath $catalogPath -Raw
             $catalogNode = $catalog.SelectSingleNode('/OSRoles/Roles[@OS="10.0" and @Server="yes" and @Core="no" and @DisplayName="Windows Server 2019"]')
             $featureNodes = if ($catalogNode) { @($catalogNode.SelectNodes('.//Role[@Id] | .//RoleService[@Id] | .//Feature[@Id]')) } else { @() }
         }
+        else { Write-PSDWizardLog -Message "Server role catalog was not found at '$catalogPath'" -LogLevel 2 -Component $FunctionName }
     }
     else {
+        Write-PSDWizardLog -Message "No role catalog mapping matched OS '$osName'" -LogLevel 2 -Component $FunctionName
         if ($status) { $status.Text = "No role catalog is configured for $($selectedOS.Name)." }
         return
     }
 
     if (-not $catalogNode -or -not $featureNodes) {
+        Write-PSDWizardLog -Message "Role catalog invalid: nodeFound=$([bool]$catalogNode), featureNodeCount=$(@($featureNodes).Count), path='$catalogPath'" -LogLevel 2 -Component $FunctionName
         if ($status) { $status.Text = "Role catalog not found for $($selectedOS.Name)." }
         return
     }
@@ -2209,6 +2278,7 @@ Function Initialize-PSDWizardRoleFeatureList {
     foreach ($propertyName in $typeToProperty.Values | Select-Object -Unique) {
         $existingSelections[$propertyName] = @([string]$SyncHash.TSEnvSettings[$propertyName] -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     }
+    Write-PSDWizardLog -Message "Role catalog '$catalogPath' loaded for '$osName': items=$(@($featureNodes).Count), existingSelections=$(@($existingSelections.Values | ForEach-Object { $_ }).Count)" -Component $FunctionName
 
     $setTSEnvProperty = ${function:Set-PSDWizardTSEnvProperty}.GetNewClosure()
     $syncRoleSelection = {
@@ -2232,6 +2302,9 @@ Function Initialize-PSDWizardRoleFeatureList {
                 Write-PSDWizardLog -Message "Unable to write $propertyName from role selection: $($_.Exception.Message)" -LogLevel 2 -Component 'RolesAndFeatures'
             }
             Write-PSDWizardLog -Message "Updated $propertyName from role catalog selection: $($selectedValues -join ',')" -Component 'RolesAndFeatures'
+        }
+        else {
+            Write-PSDWizardLog -Message "Unable to update ${propertyName}: hidden TSEnv field was not found" -LogLevel 2 -Component 'RolesAndFeatures'
         }
     }.GetNewClosure()
 
@@ -3235,8 +3308,24 @@ Function Export-PSDWizardApplication {
 
         # If no applications selected, we're done
         if ($null -eq $SelectedApplications -or $SelectedApplications.Count -eq 0) {
+            if ($script:IsDevelopmentMode -and $script:PSDWizardSyncHash) {
+                if (-not $script:PSDWizardSyncHash.TSEnvLists) { $script:PSDWizardSyncHash.TSEnvLists = @{} }
+                $script:PSDWizardSyncHash.TSEnvLists['Applications'] = @()
+            }
+            elseif (Get-PSDrive -Name 'TSEnvList' -ErrorAction SilentlyContinue) {
+                Set-Item -LiteralPath 'TSEnvList:\Applications' -Value @() -Force -ErrorAction SilentlyContinue
+            }
             Write-PSDWizardLog -Message "No applications selected, all variables cleared" -Component $FunctionName
             return @()
+        }
+
+        # TSEnvList:Applications is the array consumed by PSDApplications.ps1.
+        if ($script:IsDevelopmentMode -and $script:PSDWizardSyncHash) {
+            if (-not $script:PSDWizardSyncHash.TSEnvLists) { $script:PSDWizardSyncHash.TSEnvLists = @{} }
+            $script:PSDWizardSyncHash.TSEnvLists['Applications'] = @($SelectedApplications)
+        }
+        elseif (Get-PSDrive -Name 'TSEnvList' -ErrorAction SilentlyContinue) {
+            Set-Item -LiteralPath 'TSEnvList:\Applications' -Value @($SelectedApplications) -Force -ErrorAction Stop
         }
 
         # Write new selections with proper indexing
@@ -3474,12 +3563,19 @@ Function Get-PSDWizardApplicationDisplayItems {
         }
     }
 
-    # Build the display catalog by including visible applications and any selected dependencies
-    $displayCatalog = @($visible)
+    # Bundle parents are selected from the dropdown; only normal apps and dependencies belong in the checklist.
+    $bundleGuids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($application in $catalog) {
+        if (@($application.SelectNodes('./Dependency')).Count -gt 0) {
+            [void]$bundleGuids.Add([string]$application.guid)
+        }
+    }
+
+    $displayCatalog = @($visible | Where-Object { -not $bundleGuids.Contains([string]$_.guid) })
     foreach ($guid in @($selected)) {
         # Retrieve the application object from the catalog based on the current GUID
         $application = @($catalog | Where-Object { [string]$_.guid -ieq $guid }) | Select-Object -First 1
-        if ($application -and -not (@($displayCatalog | Where-Object { [string]$_.guid -ieq $guid }).Count)) {
+        if ($application -and -not $bundleGuids.Contains([string]$application.guid) -and -not (@($displayCatalog | Where-Object { [string]$_.guid -ieq $guid }).Count)) {
             $displayCatalog += $application
         }
     }
@@ -6174,11 +6270,12 @@ SelectedItem
 
                         $appControl.Add_SelectionChanged({
                             param($sender, $e)
-                            if ($SyncHash.IsRefreshingTaskSequenceRules) {
+                            if ($SyncHash.IsRefreshingTaskSequenceRules -or $SyncHash.IsRefreshingApplicationBundle) {
                                 return
                             }
                             # Rewrite Applications### from current UI state so deselected CustomSettings defaults do not persist.
                             $selectedGuids = @($sender.SelectedItems | Select-Object -ExpandProperty guid)
+                            $selectedGuids += @($SyncHash.SelectedApplicationBundleGuids)
                             Export-PSDWizardApplication -SelectedApplications $selectedGuids | Out-Null
                         })
                     }
@@ -6189,6 +6286,11 @@ SelectedItem
 
                     $selectedAppGuids = @($SyncHash.TSEnvSettings.Keys | Where-Object { $_ -match '^Applications\d{3}$' } | ForEach-Object { [string]$SyncHash.TSEnvSettings[$_] } | Where-Object { $_ })
                     $mandatoryAppGuids = @($SyncHash.TSEnvSettings.Keys | Where-Object { $_ -match '^MandatoryApplications\d{3}$' } | ForEach-Object { [string]$SyncHash.TSEnvSettings[$_] } | Where-Object { $_ })
+                    $SyncHash.SelectedApplicationBundleGuids = @($selectedAppGuids | ForEach-Object {
+                        $guid = [string]$_
+                        $application = @($SyncHash.ApplicationCatalog | Where-Object { [string]$_.guid -ieq $guid }) | Select-Object -First 1
+                        if ($application -and @($application.SelectNodes('./Dependency')).Count -gt 0) { $guid }
+                    })
                     $appDisplayItems = @(Get-PSDWizardApplicationDisplayItems -SyncHash $SyncHash -SelectedGuids $selectedAppGuids -MandatoryGuids $mandatoryAppGuids)
 
                     foreach ($item in $appDisplayItems) {
@@ -6277,11 +6379,12 @@ SelectedItem
 
                         $appControl.Add_SelectionChanged({
                             param($sender, $e)
-                            if ($SyncHash.IsRefreshingTaskSequenceRules) {
+                            if ($SyncHash.IsRefreshingTaskSequenceRules -or $SyncHash.IsRefreshingApplicationBundle) {
                                 return
                             }
                             # Rewrite Applications### from current UI state so deselected CustomSettings defaults do not persist.
                             $selectedGuids = @($sender.SelectedItems | Select-Object -ExpandProperty guid)
+                            $selectedGuids += @($SyncHash.SelectedApplicationBundleGuids)
                             Export-PSDWizardApplication -SelectedApplications $selectedGuids | Out-Null
                         })
                     }
@@ -6289,7 +6392,7 @@ SelectedItem
 
                 $appControl.Add_SelectionChanged({
                     param($sender, $e)
-                    if ($SyncHash.IsRefreshingTaskSequenceRules) {
+                    if ($SyncHash.IsRefreshingTaskSequenceRules -or $SyncHash.IsRefreshingApplicationBundle) {
                         return
                     }
 
@@ -7893,6 +7996,7 @@ Function Set-PSDWizardApplicationBundleSelection {
     }
 
     $selectedGuids += [string]$BundleGuid
+    $SyncHash.SelectedApplicationBundleGuids = @([string]$BundleGuid)
     $dependencies = if ($DependencyResolver) {
         & $DependencyResolver -ApplicationGuid $BundleGuid -Applications $SyncHash.ApplicationCatalog
     }
@@ -7916,7 +8020,7 @@ Function Set-PSDWizardApplicationBundleSelection {
             $applicationControl.Items.Add($item) | Out-Null
             if ($item.Selected) { $applicationControl.SelectedItems.Add($item) | Out-Null }
         }
-        $exportedGuids = @($displayItems | Where-Object { $_.Selected } | ForEach-Object { [string]$_.guid })
+        $exportedGuids = @($selectedGuids | Select-Object -Unique)
         if ($ApplicationExporter) {
             & $ApplicationExporter -SelectedApplications $exportedGuids | Out-Null
         }
@@ -7980,6 +8084,9 @@ Function Register-PSDWizardApplicationHandlers {
                 $bundle = $sender.SelectedItem
                 if ($bundle -and $bundle.guid -and -not $SyncHash.IsRefreshingApplicationBundle) {
                     & $bundleSelectionAction -Window $Window -SyncHash $SyncHash -BundleGuid ([string]$bundle.guid) -DependencyResolver $dependencyResolver -DisplayBuilder $displayBuilder -ApplicationExporter $applicationExporter
+                }
+                elseif ($bundle -and -not $bundle.guid) {
+                    $SyncHash.SelectedApplicationBundleGuids = @()
                 }
             }.GetNewClosure()
             $bundleControl.Add_SelectionChanged($bundleSelectionHandler)
