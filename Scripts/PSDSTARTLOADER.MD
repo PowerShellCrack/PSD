@@ -1,5 +1,9 @@
 # Change log for PSDStartLoader
 
+## 1.1.2 - Sept 28, 2026
+
+- Fixed prestart child-window buttons remaining disabled after Wipe Disks, Show Disks, Static IP, DaRT, or Shutdown actions complete.
+
 ## 1.1.1 - June 19, 2024
 
 - Fixed font size for asset information; no longer cuts off hyper-v serial number

@@ -470,10 +470,22 @@ Function Invoke-PSDRule {
 	Process {
 		Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing rule $RuleName"
 
-		$v = $global:variables | Where-Object { $_.id -ieq $RuleName }
 		if ($RuleName.ToUpper() -eq "DEFAULTGATEWAY") {
-			# Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Property DEFAULTGATEWAY is not yet implemented"
+			$gatewayValues = @((Get-Item tsenvlist:DefaultGateway -ErrorAction SilentlyContinue).Value)
+			foreach ($gateway in $gatewayValues) {
+				$sectionName = [string]$global:iniFile["DefaultGateway"][[string]$gateway]
+				if ([string]::IsNullOrWhiteSpace($sectionName)) {
+					Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): No DefaultGateway mapping found for $gateway"
+					continue
+				}
+
+				Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): DefaultGateway $gateway maps to section $sectionName"
+				Get-PSDSettings $global:iniFile[$sectionName]
+			}
+			return
 		}
+
+		$v = $global:variables | Where-Object { $_.id -ieq $RuleName }
 
 		# Evaluate Serialnumber if exists
 		$v = $global:variables | Where-Object { $_.id -ieq $RuleName }

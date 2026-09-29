@@ -835,13 +835,26 @@ else{
 
     # Process UserExitScripts
     Write-PSDBootInfo -SleepSec 1 -Message "Processing UserExitScripts (if exists)"
-    $UserExitScriptFolder = Get-PSDContent -Content "PSDResources\UserExitScripts" -Filter *.ps1
     Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing UserExitScripts (if exists)"
-    $UserExitScripts = Get-ChildItem -Path $UserExitScriptFolder
-    foreach($UserExitScript in $UserExitScripts){
-        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing $UserExitScript"
-        & $UserExitScript.FullName
+    $UserExitScriptFolder = Get-PSDContent -Content "PSDResources\UserExitScripts"
+    $UserExitScripts = if (Test-Path -LiteralPath $UserExitScriptFolder -PathType Container) {
+        @(Get-ChildItem -LiteralPath $UserExitScriptFolder -Filter '*.ps1' -File -ErrorAction SilentlyContinue)
     }
+    else {
+        @()
+    }
+    foreach($UserExitScript in $UserExitScripts){
+        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Processing $($UserExitScript.Name)"
+        try {
+            & $UserExitScript.FullName
+            Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Completed $($UserExitScript.Name)"
+        }
+        catch {
+            Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): UserExitScript $($UserExitScript.Name) failed: $($_.Exception.Message)" -LogLevel 3
+            throw
+        }
+    }
+    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): UserExitScripts processing complete; count=$($UserExitScripts.Count)"
 
     # Process wizard
     $PSDWizard = "PSDWizardNew"
