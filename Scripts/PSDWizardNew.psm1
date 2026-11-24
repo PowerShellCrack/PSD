@@ -2446,12 +2446,13 @@ Function Initialize-PSDWizardRoleFeatureList {
     $setTSEnvProperty = ${function:Set-PSDWizardTSEnvProperty}.GetNewClosure()
     $syncRoleSelection = {
         param($sender, $eventArgs)
-        $propertyName = $typeToProperty[[string]$sender.Tag.Type]
+        # The role data is kept in DataContext: the Dark theme's CheckBox style uses Tag as its high contrast flag, a Tag object leaves the check box without a template
+        $propertyName = $typeToProperty[[string]$sender.DataContext.Type]
         if (-not $propertyName) { return }
 
         $selectedValues = @($featureList.Items | Where-Object {
-            $_.Tag.Type -eq $sender.Tag.Type -and $_.IsChecked -eq $true
-        } | ForEach-Object { [string]$_.Tag.Id })
+            $_.DataContext.Type -eq $sender.DataContext.Type -and $_.IsChecked -eq $true
+        } | ForEach-Object { [string]$_.DataContext.Id })
         $targetField = $Window.FindName("TSEnv_$propertyName")
         if ($targetField) {
             $targetField.Text = $selectedValues -join ','
@@ -2476,7 +2477,7 @@ Function Initialize-PSDWizardRoleFeatureList {
         $featureId = [string]$featureNode.GetAttribute('Id')
         $checkBox = [System.Windows.Controls.CheckBox]::new()
         $checkBox.Content = $displayName
-        $checkBox.Tag = [pscustomobject]@{
+        $checkBox.DataContext = [pscustomobject]@{
             Id = $featureId
             Type = $featureNode.LocalName
         }

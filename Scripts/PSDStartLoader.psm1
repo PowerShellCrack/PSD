@@ -1919,7 +1919,10 @@ Function New-PSDStartLoaderPrestartMenu
         [ValidateSet('HorizontalTop','HorizontalBottom','VerticalLeft','VerticalRight')]
         [string]$Position = 'VerticalRight',
         [switch]$OnTop,
-        [switch]$Wait
+        [switch]$Wait,
+        # Seconds before the menu continues by itself (PSDPrestartTimeout in Bootstrap.ini); 0 waits for the user
+        [ValidateRange(0,86400)]
+        [int]$TimeoutSeconds = 0
     )
     [string]${CmdletName} = $MyInvocation.MyCommand
     Write-PSDLog -Message ("{0}: Debug Menu started" -f ${CmdletName})
@@ -1928,6 +1931,9 @@ Function New-PSDStartLoaderPrestartMenu
     $syncHash = [hashtable]::Synchronized(@{})
     $PSDRunSpace =[runspacefactory]::CreateRunspace()
     $syncHash.Runspace = $PSDRunSpace
+    $syncHash.TimeoutSeconds = $TimeoutSeconds
+    $syncHash.AutoContinued = $false
+    $syncHash.AutoCancelled = $false
     $syncHash.InPE = Test-PSDStartLoaderInWinPE
     $syncHash.CmtracePath = Get-PSDStartLoaderCmtrace
     $syncHash.DartTools = Test-PSDStartLoaderHasDartPE
@@ -2257,6 +2263,7 @@ Function New-PSDStartLoaderPrestartMenu
             # Temporarily disable this button to prevent re-entry.
             $sender.IsEnabled = $false
             try {
+                # Invoke the wipe disk menu to allow disk wiping operations
                 $syncHash.WipeDiskMenu = Invoke-Command -ScriptBlock $syncHash.CleanWindow
             }
             finally {
@@ -2269,6 +2276,7 @@ Function New-PSDStartLoaderPrestartMenu
             # Temporarily disable this button to prevent re-entry.
             $sender.IsEnabled = $false
             try {
+                # Invoke the disk viewer menu to allow inspecting disk contents
                 $syncHash.DiskViewerMenu = Invoke-Command -ScriptBlock $syncHash.DiskWindow
             }
             finally {
@@ -2326,6 +2334,7 @@ else {
             $encodedInit = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($consoleInit))
             $poshArgs = @('-NoExit', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedInit)
 
+            # Launch a new PowerShell window with the necessary modules loaded
             If($syncHash.InPE){
                 $syncHash.OpenPoSH = Start-Process 'powershell.exe' -ArgumentList $poshArgs -WorkingDirectory 'X:\' -PassThru
             }
@@ -2340,6 +2349,7 @@ else {
             $sender.IsEnabled = $false
             try {
                 If($syncHash.DartTools){
+                    # Launch the DaRT tools executable if available
                     $syncHash.OpenDaRT = Start-Process 'X:\Sources\Recovery\Tools\MsDartTools.exe' -Wait -PassThru
                 }
                 # Hide in case this button becomes visible without DaRT installed.
@@ -2358,6 +2368,7 @@ else {
             # Temporarily disable this button to prevent re-entry.
             $sender.IsEnabled = $false
             try {
+                # Invoke the NIC configuration menu to allow adding a static IP address
                 $syncHash.NicConfigMenu = Invoke-Command -ScriptBlock $syncHash.NicWindow
             }
             finally {
@@ -2402,6 +2413,16 @@ else {
                 $eventArgs.Handled = $true
             }
         })
+
+        # Drag the menu, then take keyboard focus back: the drag loop and the handled mouse-down leave the window without it, so arrow keys would be ignored
+        Function Move-PSDMenuWindow{
+            Try{ $syncHash.Window.DragMove() }Catch{ $null = $_ }
+            $null = $syncHash.Window.Activate()
+            $null = $syncHash.Window.Focus()
+            [System.Windows.Input.Keyboard]::Focus($syncHash.Window) | Out-Null
+        }
+
+        # Add a PreviewMouseLeftButtonDown event handler to allow dragging the window from non-button areas
         $syncHash.Window.Add_PreviewMouseLeftButtonDown({
             param($sender, $eventArgs)
             $visual = $eventArgs.OriginalSource
@@ -2414,16 +2435,18 @@ else {
                 $visual = [System.Windows.Media.VisualTreeHelper]::GetParent($visual)
             }
             if (-not $button) {
-                $sender.DragMove()
                 $eventArgs.Handled = $true
+                Move-PSDMenuWindow
             }
         })
+
+        # Find the drag handle element for moving the window
         $dragHandle = $syncHash.Window.FindName('dragHandle')
         if ($dragHandle) {
             $dragHandle.Add_MouseLeftButtonDown({
                 param($sender, $eventArgs)
-                $syncHash.Window.DragMove()
                 $eventArgs.Handled = $true
+                Move-PSDMenuWindow
             })
         }
         $syncHash.Window.Focus() | Out-Null
@@ -2435,6 +2458,67 @@ else {
 
         #make sure this display on top of every window
         $syncHash.Window.Topmost = $syncHash.TopMost
+
+        # Auto-continue: count down on the Continue button and close the menu when it reaches zero
+        If($syncHash.TimeoutSeconds -gt 0){
+            $syncHash.Remaining = [int]$syncHash.TimeoutSeconds
+            $syncHash.lblExit.Content = 'Continue ({0}s)' -f $syncHash.Remaining
+            $syncHash.btnExit.ToolTip = 'Continues automatically. Using any other button cancels the countdown.'
+
+            # Initialize the auto-continue timer for the Continue button countdown
+            $syncHash.AutoTimer = New-Object System.Windows.Threading.DispatcherTimer
+            $syncHash.AutoTimer.Interval = [TimeSpan]::FromSeconds(1)
+            $syncHash.AutoTimer.Add_Tick({
+                $syncHash.Remaining = $syncHash.Remaining - 1
+
+                # Update the Continue button content with the remaining time
+                If($syncHash.Remaining -le 0){
+                    $syncHash.AutoTimer.Stop()
+                    $syncHash.AutoContinued = $true
+                    Close-PSDStartLoaderDebugMenu
+                }
+                Else{
+                    $syncHash.lblExit.Content = 'Continue ({0}s)' -f $syncHash.Remaining
+                    If($syncHash.Remaining -le 5){ $syncHash.lblExit.Foreground = 'Red' }
+                }
+            })
+
+            # Someone using another button is working: stop the countdown so the menu does not close under them.
+            # The preview events run before the button's own click, which can show a window that keeps the timer running.
+            $syncHash.StopCountdown = {
+                If($syncHash.AutoTimer.IsEnabled){
+                    $syncHash.AutoTimer.Stop()
+                    $syncHash.AutoCancelled = $true
+                    $syncHash.lblExit.Foreground = 'Black'
+                    $syncHash.lblExit.Content = 'Continue'
+                    $syncHash.btnExit.ToolTip = $null
+                }
+            }
+
+            # add a PreviewMouseLeftButtonDown event handler to stop the countdown if a button other than the Continue button is clicked
+            $syncHash.Window.Add_PreviewMouseLeftButtonDown({
+                param($sender, $eventArgs)
+                $visual = $eventArgs.OriginalSource
+                # Traverse the visual tree to check if a button other than the Continue button was clicked.
+                while ($visual -and $visual -is [System.Windows.DependencyObject]) {
+                    If($visual -is [System.Windows.Controls.Button]){
+                        If($visual.Name -ne 'btnExit'){ & $syncHash.StopCountdown }
+                        break
+                    }
+                    $visual = [System.Windows.Media.VisualTreeHelper]::GetParent($visual)
+                }
+            })
+
+            # add a PreviewKeyDown event handler to stop the countdown if a key is pressed on a button other than the Continue button
+            $syncHash.Window.Add_PreviewKeyDown({
+                param($sender, $eventArgs)
+                $focused = [System.Windows.Input.Keyboard]::FocusedElement
+                If($eventArgs.Key -in 'Return','Space' -and $focused -is [System.Windows.Controls.Button] -and $focused.Name -ne 'btnExit'){ & $syncHash.StopCountdown }
+            })
+
+            # start the auto-continue countdown timer
+            $syncHash.AutoTimer.Start()
+        }
 
         $syncHash.Window.ShowDialog()
         #$PSDRunspace.Close()
@@ -2463,6 +2547,7 @@ else {
             } | Out-Null
     }
 
+    # Wait for the asynchronous PowerShell command to complete if $Wait is specified
     $AsyncHandle = $PowerShellCommand.BeginInvoke()
 
     If($Wait){
@@ -2479,11 +2564,16 @@ else {
         }
     }
 
+    # Log the result of the debug menu interaction for debugging and auditing purposes
     If($Data.Error){Write-PSDLog -Message ("{0}: Debug Menu errored: {1}" -f ${CmdletName}, $Data.Error) -LogLevel 3}
+    ElseIf($Data.AutoContinued){Write-PSDLog -Message ("{0}: Debug Menu continued automatically after {1} seconds (PSDPrestartTimeout)" -f ${CmdletName}, $TimeoutSeconds)}
+    ElseIf($Data.AutoCancelled){Write-PSDLog -Message ("{0}: Debug Menu auto-continue was cancelled by using the menu, waited for Continue" -f ${CmdletName})}
     Else{Write-PSDLog -Message ("{0}: Debug Menu closed" -f ${CmdletName})}
+
+    # Return the collected data from the runspace to the caller
     return $Data
 
-}#end runspacce
+}
 #endregion
 
 #region FUNCTION: Loader for main start UI
@@ -2502,7 +2592,10 @@ Function New-PSDStartLoader
         [ValidateSet('HorizontalTop','HorizontalBottom','VerticalLeft','VerticalRight')]
         [string]$MenuPosition = 'VerticalRight',
         [switch]$Preload,
-        [switch]$FullScreen
+        [switch]$FullScreen,
+        # Seconds the prestart menu stays open before it continues by itself; 0 waits for the user
+        [ValidateRange(0,86400)]
+        [int]$PrestartTimeoutSeconds = 0
     )
     [string]${CmdletName} = $MyInvocation.MyCommand
     Write-PSDLog -Message ("{0}: PSDStartLoader started" -f ${CmdletName})
@@ -2520,7 +2613,8 @@ Function New-PSDStartLoader
     #$syncHash.TSProgressStatus = {Get-PSDStartTSProgress}
     $syncHash.DartTools = Test-PSDStartLoaderHasDartPE
     $syncHash.MenuPosition = $MenuPosition
-    $syncHash.ShowPrestartMenu = {New-PSDStartLoaderPrestartMenu -Position $args[0] -OnTop -Wait}
+    $syncHash.PrestartTimeout = $PrestartTimeoutSeconds
+    $syncHash.ShowPrestartMenu = {New-PSDStartLoaderPrestartMenu -Position $args[0] -OnTop -Wait -TimeoutSeconds $args[1]}
     $syncHash.CheckboxStyle = Add-PSDStartLoaderCheckboxStyle
     $syncHash.DeviceInfoCommand = {Get-PSDLocalInfo -PassThru}
     $syncHash.NetworkInfoCommand  = {Get-PSDStartLoaderInterfaceDetails}
@@ -2532,6 +2626,8 @@ Function New-PSDStartLoader
     $PSDRunSpace.ThreadOptions = "ReuseThread"
     $PSDRunSpace.Open() | Out-Null
     $PSDRunSpace.SessionStateProxy.SetVariable("syncHash",$syncHash)
+    
+    # Invoke the asynchronous PowerShell command to start the loader window
     $PowerShellCommand = [PowerShell]::Create().AddScript({
 
         [string]$xaml = @"
@@ -2813,7 +2909,7 @@ Function New-PSDStartLoader
             $this.IsEnabled = $false
 
             $syncHash.Window.Dispatcher.Invoke([action]{
-                $syncHash.PrestartMenu = Invoke-Command -ScriptBlock $syncHash.ShowPrestartMenu -ArgumentList $syncHash.MenuPosition
+                $syncHash.PrestartMenu = Invoke-Command -ScriptBlock $syncHash.ShowPrestartMenu -ArgumentList $syncHash.MenuPosition, $syncHash.PrestartTimeout
             },'Normal')
             #$this.IsEnabled = $syncHash.PrestartMenu.isClosed
         })

@@ -498,12 +498,25 @@ else{
 
                 Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): About to start X:\Deploy\Scripts\PSDPrestart.ps1 -Mode $Mode"
 
+                # PSDPrestartTimeout (Bootstrap.ini) is the number of seconds the prestart menu stays open before it continues by itself.
+                # Without it, or with a value that is not a positive number, the menu waits for the user.
+                $PrestartTimeout = 0
+                if(-not [string]::IsNullOrWhiteSpace($tsenv:PSDPrestartTimeout)){
+                    if([int]::TryParse($tsenv:PSDPrestartTimeout.Trim(), [ref]$PrestartTimeout) -and $PrestartTimeout -gt 0){
+                        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): The prestart menu continues by itself after $PrestartTimeout seconds"
+                    }
+                    else{
+                        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): PSDPrestartTimeout '$($tsenv:PSDPrestartTimeout)' is not a positive number of seconds, the prestart menu waits for the user" -LogLevel 2
+                        $PrestartTimeout = 0
+                    }
+                }
+
                 switch ($Mode)
                 {
                     'FullScreen' {
                         Import-Module PSDStartLoader.psm1 -Global -Force -Verbose:$False
                         ##* BEGIN LOADER
-                        $PSDStartLoader = New-PSDStartLoader -LogoImgPath "$deployRoot\scripts\powershell.png" -MenuPosition $Position -FullScreen
+                        $PSDStartLoader = New-PSDStartLoader -LogoImgPath "$deployRoot\scripts\powershell.png" -MenuPosition $Position -FullScreen -PrestartTimeoutSeconds $PrestartTimeout
 
                         #wait for UI to loaded on screen
                         Do{
@@ -558,7 +571,7 @@ else{
                         Write-PSDBootInfo -Message "Launching PSD Prestart Menu. Select an action, then press Continue to begin the PSD deployment process."
 
                         # Continue closes and disposes the prestart runspace before PSDWizard starts.
-                        $PSDStartLoader = New-PSDStartLoaderPrestartMenu -Position $Position -OnTop -Wait
+                        $PSDStartLoader = New-PSDStartLoaderPrestartMenu -Position $Position -OnTop -Wait -TimeoutSeconds $PrestartTimeout
 
                         # Hide all non functioning buttons
                         #'btnWipeDisk','btnOpenDisk','btnAddStaticIP' | Set-PSDStartLoaderElement -Runspace $PSDStartLoader -Property Visibility -Value Hidden

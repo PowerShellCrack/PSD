@@ -366,6 +366,7 @@
         <property id="PSDWizardCustomPaneAllowBypass" type="string" overwrite="false" description="Allow the PSDwizard custom pane to be bypassed" />
         <property id="PSDWizardCollapseTSList" type="string" overwrite="false" description="Collapse the task sequence list in the PSDwizard" />
         <property id="PSDPrestartPosition" type="string" overwrite="false" description="Sets the position of the prestart menu when running it in fullscreen" />
+        <property id="PSDPrestartTimeout" type="string" overwrite="false" description="Seconds the prestart menu stays open before it continues by itself. Not set waits for the user" />
         <property id="DeviceRoleAllowBypass" type="string" overwrite="false" description="Allows bypass of selection pane" />
         <property id="IntuneGroupAllowBypass" type="string" overwrite="false" description="Allows bypass of selection pane" />
 

@@ -9,6 +9,8 @@
 - Reprocessing a Task Sequence silently did nothing when PSDGather was imported into the caller's scope, while the old lists were still cleared. The rules are now run through the loaded PSDGather module, and nothing is cleared when they cannot be run.
 - Domain join password confirmation is prefilled when `DomainAdminPassword` comes from the task sequence environment, so the wizard no longer asks to confirm a password that CustomSettings already supplied.
 - Org Unit page no longer fails when a theme has no Org Unit dropdown, and a missing list is no longer counted as one empty value.
+- Dark theme: a selected Task Sequence was blue on blue. The tree text is now light (folders blue) and the selected item is white on a dark blue highlight.
+- Dark theme: the Roles and Features list showed blank rows. The check boxes kept their data in `Tag`, which the Dark check box style uses as its high contrast flag, so they had no template and drew nothing; the data moved to `DataContext`, and the list uses the plain row style of the Applications list.
 - The language and time zone dropdowns only showed the built-in sample lists (10 languages, 12 time zones) in WinPE. `PSDListOfLanguages.xml` and `PSDListOfTimeZoneIndex.xml` are in the deployment share's `Scripts` folder, but the wizard looked in `Scripts\PSDWizardNew`. The folder is now found from the resource folder, its parent, `ScriptRoot` or the share's `Scripts` folder, and a missing index is logged as a warning.
 
 ### Added

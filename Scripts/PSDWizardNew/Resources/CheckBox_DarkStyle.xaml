@@ -29,9 +29,9 @@
         <Setter Property="OverridesDefaultStyle" Value="true"/>
         <Setter Property="FontSize" Value="14"/>
         <Setter Property="FontFamily" Value="Segoe UI"/>
-        <Setter Property="Tag" Value="{DynamicResource {x:Static SystemParameters.HighContrastKey}}" />
+        <!-- The high contrast flag comes from the system, not from Tag: code that stores its own data in Tag would leave the check box without a template -->
         <Style.Triggers>
-            <DataTrigger Binding="{Binding RelativeSource= {x:Static RelativeSource.Self}, Path=Tag}" Value="False">
+            <DataTrigger Binding="{Binding Source={x:Static SystemParameters.HighContrast}}" Value="False">
                 <Setter Property="Foreground" Value="#EBEBEB"/>
                 <Setter Property="FocusVisualStyle"	Value="{StaticResource CheckBoxFocusVisual}"/>
                 <Setter Property="Template">
@@ -60,7 +60,7 @@
                     </Setter.Value>
                 </Setter>
             </DataTrigger>
-            <DataTrigger Binding="{Binding RelativeSource= {x:Static RelativeSource.Self},  Path=Tag}" Value="True">
+            <DataTrigger Binding="{Binding Source={x:Static SystemParameters.HighContrast}}" Value="True">
                 <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.WindowTextColor}}"/>
                 <Setter Property="FocusVisualStyle"	Value="{StaticResource CheckBoxFocusVisualHighContrast}"/>
                 <Setter Property="Template">

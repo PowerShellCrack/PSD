@@ -22,21 +22,25 @@
         <Setter Property="KeyboardNavigation.AcceptsReturn" Value="True" />
         <Setter Property="HorizontalContentAlignment" Value="{Binding HorizontalContentAlignment, RelativeSource={RelativeSource AncestorType={x:Type ItemsControl}}}"/>
         <Setter Property="VerticalContentAlignment" Value="{Binding VerticalContentAlignment, RelativeSource={RelativeSource AncestorType={x:Type ItemsControl}}}"/>
-        <!-- Forground for folders -->
-        <Setter Property="Foreground" Value="#4590CE"/>
+        <!-- Task sequences are light, folders (items with children) blue and the selected item white on a dark blue highlight -->
+        <Setter Property="Foreground" Value="#EBEBEB"/>
         <Setter Property="HeaderTemplate">
             <Setter.Value>
                 <HierarchicalDataTemplate>
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock VerticalAlignment="Center" Text="{Binding}" Margin="3" Foreground="#4590CE" />
+                        <TextBlock VerticalAlignment="Center" Text="{Binding}" Margin="3" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type TreeViewItem}}}" />
                     </StackPanel>
                 </HierarchicalDataTemplate>
             </Setter.Value>
         </Setter>
         <Setter Property="BorderThickness" Value="1.5"/>
         <Style.Triggers>
+            <Trigger Property="HasItems" Value="True">
+                <Setter Property="Foreground" Value="#4590CE"/>
+            </Trigger>
             <Trigger Property="IsSelected" Value="True">
                 <Setter Property="BorderBrush" Value="#EBEBEB"/>
+                <Setter Property="Foreground" Value="White"/>
             </Trigger>
             <MultiTrigger>
                 <MultiTrigger.Conditions>
@@ -50,6 +54,11 @@
             <Style TargetType="Border">
                 <Setter Property="CornerRadius" Value="4"/>
             </Style>
+            <!-- The default highlight is the system blue, which hides the blue text -->
+            <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2E5C99"/>
+            <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="White"/>
+            <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#3E4E73"/>
+            <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="White"/>
         </Style.Resources>
     </Style>
 </ResourceDictionary>
