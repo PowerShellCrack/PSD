@@ -1,5 +1,10 @@
 # Change log for PSDStartLoader
 
+## 3.0.1 - Nov 23, 2026
+
+- Version aligned with the PSD 3.0.1 release (PSDWizardNew 3.0.1).
+- The prestart PowerShell button now opens a window with the task sequence modules loaded, so the `TSEnv:` and `TSEnvList:` drives are available.
+
 ## 1.1.2 - Sept 28, 2026
 
 - Fixed prestart child-window buttons remaining disabled after Wipe Disks, Show Disks, Static IP, DaRT, or Shutdown actions complete.

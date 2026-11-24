@@ -17,6 +17,7 @@
           Version - 0.0.1 - () - Finalized functional version 1.
 	      Version - 0.0.2 - () - Return code Application installation
           Version - 0.0.3 - () - Fix for dependency processing
+          Version - 0.0.4 - () - Log and verify application content download, try/catch logging around content and installer launch
 
           TODO:
 
@@ -29,7 +30,7 @@ param (
 )
 
 # Set scriptversion for logging
-$ScriptVersion = "0.0.3"
+$ScriptVersion = "0.0.4"
 
 # Load core modules
 Import-Module PSDUtility
@@ -128,7 +129,22 @@ function Install-PSDApplication
                 # App content is on the deployment share, get it
                 #Write-Verbose "$($MyInvocation.MyCommand.Name): App content is on the deployment share, get it"
                 Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): App content is on the deployment share, get it"
-                $appContent = Get-PSDContent -Content "$($app.WorkingDirectory.Substring(2))"
+                try {
+                    $appContent = Get-PSDContent -Content "$($app.WorkingDirectory.Substring(2))"
+                }
+                catch {
+                    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Failed to download content for $($app.Name) from $($app.WorkingDirectory): $($_.Exception.Message)" -LogLevel 3
+                    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): $($_.ScriptStackTrace)" -LogLevel 3
+                    throw
+                }
+
+                # Do not start the installer without its content, the resulting return code (1619, 2, ...) hides the real problem
+                if (-not (Test-Path -LiteralPath $appContent -PathType Container) -or -not (Get-ChildItem -LiteralPath $appContent -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+                    $message = "Content for $($app.Name) was not downloaded, $appContent is missing or empty. Check the Get-PSDContentWeb entries above and the BITS client log (Microsoft-Windows-Bits-Client/Operational)."
+                    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): $message" -LogLevel 3
+                    throw $message
+                }
+                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Content for $($app.Name) is available in $appContent"
                 $workingDir = $appContent
             }
             else
@@ -170,22 +186,34 @@ function Install-PSDApplication
             Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): TODO: Substitute"
             #Write-Verbose "$($MyInvocation.MyCommand.Name): About to run: $cmd"
             Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): About to run: $cmd"
-            if ($workingDir -eq "")
-            {
+            try {
+                if ($workingDir -eq "")
+                {
 
-                $result = Start-Process -FilePath "$toolRoot\bddrun.exe" -ArgumentList $cmd -Wait -Passthru
+                    $result = Start-Process -FilePath "$toolRoot\bddrun.exe" -ArgumentList $cmd -Wait -Passthru -ErrorAction Stop
+                }
+                else
+                {
+                    #Write-Verbose "$($MyInvocation.MyCommand.Name): Setting working directory to $workingDir"
+                    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Setting working directory to $workingDir"
+                    $result = Start-Process -FilePath "$toolRoot\bddrun.exe" -ArgumentList $cmd -WorkingDirectory $workingDir -Wait -Passthru -ErrorAction Stop
+                }
             }
-            else
-            {
-                #Write-Verbose "$($MyInvocation.MyCommand.Name): Setting working directory to $workingDir"
-                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Setting working directory to $workingDir"
-                $result = Start-Process -FilePath "$toolRoot\bddrun.exe" -ArgumentList $cmd -WorkingDirectory $workingDir -Wait -Passthru
+            catch {
+                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Unable to run '$cmd' for application $($app.Name): $($_.Exception.Message)" -LogLevel 3
+                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): $($_.ScriptStackTrace)" -LogLevel 3
+                throw
             }
             # TODO: Check return codes
             #Write-Verbose "$($MyInvocation.MyCommand.Name): TODO: Check return codes"
             Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): TODO: Check return codes"
             #Write-Verbose "$($MyInvocation.MyCommand.Name): Application $($app.Name) return code = $($result.ExitCode)"
-            Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Application $($app.Name) return code = $($result.ExitCode)"
+            if ($result.ExitCode -notin 0, 3010, 1641) {
+                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Application $($app.Name) return code = $($result.ExitCode) (not a success code, check the installer log and the content in $workingDir)" -LogLevel 2
+            }
+            else {
+                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Application $($app.Name) return code = $($result.ExitCode)"
+            }
         }
 
         # Update list of installed apps

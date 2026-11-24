@@ -13,8 +13,8 @@
         Contact: @PowershellCrack
         Primary: @PowershellCrack
         Created: 2022-02-21
-        Modified: 2024-06-25
-        Version: 1.1.2
+        Modified: 2026-11-23
+        Version: 3.0.1
 
         SEE PSDSTARTLOADER.MD
 
@@ -2301,11 +2301,36 @@ Function New-PSDStartLoaderPrestartMenu
 
         #action for poshwindow button
         $syncHash.btnOpenPSWindow.Add_Click({
+            # A plain PowerShell has no TSEnv: or TSEnvList: drive, they come from the PSD modules, so load them in the new window
+            $consoleInit = @'
+$Host.UI.RawUI.WindowTitle = 'PSD PowerShell'
+foreach ($moduleName in 'Microsoft.BDD.TaskSequenceModule', 'PSDUtility', 'PSDDeploymentShare', 'PSDGather') {
+    try {
+        Import-Module $moduleName -Global -Force -ErrorAction Stop -Verbose:$false
+        Write-Host "Loaded module $moduleName" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Could not load module $moduleName : $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+if (Get-PSDrive -Name TSEnv -ErrorAction SilentlyContinue) {
+    Write-Host 'The TSEnv: and TSEnvList: drives are available, for example:' -ForegroundColor Cyan
+    Write-Host '  Get-ChildItem tsenv: | Sort-Object Name' -ForegroundColor Gray
+    Write-Host '  Get-ChildItem tsenvlist: | Sort-Object Name' -ForegroundColor Gray
+    Write-Host 'Note: this is a separate process. Before the task sequence engine starts, the variables only live in memory inside PSDStart.' -ForegroundColor Yellow
+}
+else {
+    Write-Host 'The TSEnv: drive is not available. Is the task sequence environment started?' -ForegroundColor Yellow
+}
+'@
+            $encodedInit = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($consoleInit))
+            $poshArgs = @('-NoExit', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedInit)
+
             If($syncHash.InPE){
-                $syncHash.OpenPoSH = Start-Process 'powershell.exe' -WorkingDirectory 'X:\' -PassThru
+                $syncHash.OpenPoSH = Start-Process 'powershell.exe' -ArgumentList $poshArgs -WorkingDirectory 'X:\' -PassThru
             }
             Else{
-                $syncHash.OpenPoSH = Start-Process 'powershell.exe' -WorkingDirectory $env:windir -PassThru
+                $syncHash.OpenPoSH = Start-Process 'powershell.exe' -ArgumentList $poshArgs -WorkingDirectory $env:windir -PassThru
             }
         })
 

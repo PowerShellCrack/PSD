@@ -358,6 +358,7 @@
         <property id="SkipReadinessCheck" type="string" overwrite="false" description="Skip the PSDwizard readiness check(s)" />
         <property id="SkipDeployReadiness" type="string" overwrite="false" description="Skip the PSDwizard deploy readiness page" />
         <property id="SkipRoleSelection" type="string" overwrite="false" description="Skip the PSDwizard role selection page" />
+        <property id="SkipDeviceRole" type="string" overwrite="false" description="Skip the PSDwizard device role selection page" />
         <property id="SkipIntuneGroup" type="string" overwrite="false" description="Skip the PSDwizard Intune group selection page" />
         <property id="SkipDiskSelection" type="string" overwrite="false" description="Skip the PSDwizard disk selection page" />
         <property id="PSDReadinessAllowBypass" type="string" overwrite="false" description="Allow the PSDwizard readiness check to be bypassed" />

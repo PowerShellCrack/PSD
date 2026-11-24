@@ -1,5 +1,40 @@
 # Change log for PSDWizardNew
 
+## 3.0.1 - Nov 23, 2026
+
+### Fixed
+
+- Org Unit, Intune Group and Device Role dropdowns were empty in WinPE. The task sequence environment returns property names in upper case (`DOMAINOUS001`) and `FindName` is case sensitive, so the `TSEnvList_*` controls were never found. Controls are now found ignoring case, on first display and after every Task Sequence selection.
+- Settings of one Task Sequence carried over to the next. Properties applied before the wizard opened (for example by a `DefaultGateway` rule that maps to a Task Sequence section) were never cleared, so mandatory applications, lists and skip properties stayed behind (for example Windows 11 mandatory apps on a server). The settings of every Task Sequence section are now cleared when the selection changes, and only the cleared values the selected section does not set are restored from `[Default]` (processed by PSDGather, so first value wins and lists are not added twice).
+- Reprocessing a Task Sequence silently did nothing when PSDGather was imported into the caller's scope, while the old lists were still cleared. The rules are now run through the loaded PSDGather module, and nothing is cleared when they cannot be run.
+- Domain join password confirmation is prefilled when `DomainAdminPassword` comes from the task sequence environment, so the wizard no longer asks to confirm a password that CustomSettings already supplied.
+- Org Unit page no longer fails when a theme has no Org Unit dropdown, and a missing list is no longer counted as one empty value.
+- The language and time zone dropdowns only showed the built-in sample lists (10 languages, 12 time zones) in WinPE. `PSDListOfLanguages.xml` and `PSDListOfTimeZoneIndex.xml` are in the deployment share's `Scripts` folder, but the wizard looked in `Scripts\PSDWizardNew`. The folder is now found from the resource folder, its parent, `ScriptRoot` or the share's `Scripts` folder, and a missing index is logged as a warning.
+
+### Added
+
+- Debug console, available with `PSDDebug=YES` (set it in `Bootstrap.ini`), `-Debug` or `-DevelopmentMode`. The Debug Console button (`_wizDebugConsole` in the theme template, Classic and Dark) opens a window with tabs for:
+  - the live `TSEnv:` variables next to the wizard's snapshot of them, flagging changed, new, removed and differing values (passwords are masked),
+  - the lists the wizard built next to what `TSEnvList:` returns,
+  - the wizard state (Task Sequence, applied keys, visible pages),
+  - the log, either of this wizard session or the PSD log file,
+  - a console that runs commands in the wizard's own session, with `$SyncHash` and `$Window` available.
+  The tabs refresh after every Task Sequence selection, and a snapshot of everything can be saved next to the PSD logs.
+- Busy overlay with a spinning ring while a Task Sequence selection is processed. The ring is drawn by a small window on its own thread so it keeps turning while the wizard is busy; the overlay falls back to a static ring if that window cannot start.
+- Keep the last wizard log entries in memory for the debug console.
+
+### Changed
+
+- Lists for the dropdowns come from one function, `Get-PSDWizardTSEnvLists`, built from the numbered properties (`DomainOUs001`, ...) in the `TSEnv:` snapshot. `TSEnvList:` is a view over those numbered variables, so this gives the same lists in WinPE and in development mode. The helper that was nested inside `Show-PSDWizard` was removed.
+- Clearing a Task Sequence's properties is done once per list instead of once per numbered property, so a selection is processed faster.
+
+### Related changes in other PSD scripts
+
+- `ZTIGather.xml`: declared `SkipDeviceRole`, which the Device Role page uses but PSDGather ignored from CustomSettings.ini.
+- `PSDStartLoader.psm1`: the PowerShell button opens a window with the task sequence modules loaded, so the `TSEnv:` and `TSEnvList:` drives exist.
+- `PSDGather.psm1` (issue 319): `IsServerCoreOS` uses the `InstallationType` registry value instead of the missing `Explorer.exe`, and server hardware in a tower chassis (`PCSystemType` 4, 5 or 7) is detected as a server.
+- `PSDDeploymentShare.psm1` and `PSDApplications.ps1` (issue 318): BITS failures are logged and fall back to WebClient, downloads are verified and incomplete downloads removed, and application content and installer start-up errors are logged.
+
 ## 3.0.0 - Sept 27, 2026
 
 - PSDWizardNew is now a runspace; making it more responsive.

@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    Module for the PSD Wizard - Version 3.0.0
+    Module for the PSD Wizard - Version 3.0.1
 .DESCRIPTION
     Completely rebuilt PowerShell Deployment Wizard with runspace-based UI architecture,
     optimized performance, and fixed critical bugs from v2.3.6
@@ -14,8 +14,12 @@
     Contact: Dick Tracy (@PowershellCrack)
     Primary: Dick Tracy (@PowershellCrack)
     Created: 2020-01-12
-    Modified: 2026-09-27
-    Version: 3.0.0
+    Modified: 2026-11-23
+    Version: 3.0.1
+    VERSION 3.0.1 CHANGES: (see PSDWizardNew\CHANGELOG.md)
+        FIXED: List dropdowns (Org Unit, Intune Group, Device Role) empty because control names are case sensitive
+        FIXED: Settings of one Task Sequence carried over to another (mandatory applications, lists, skip properties)
+        Debug console (PSDDebug=YES) and a busy indicator while a Task Sequence selection is processed
     VERSION 3.0.0 CHANGES:
         Complete rewrite from scratch with optimized logic
         Runspace-based UI architecture for responsiveness
@@ -55,12 +59,15 @@ $script:PSDWizardRunspace = $null
 $script:PSDWizardUI = $null
 $script:PSDWizardSyncHash = $null
 
+# Last log entries of this session, shown by the debug console
+$script:PSDWizardLogBuffer = New-Object 'System.Collections.Generic.List[string]'
+
 # Development mode flag
 $script:IsDevelopmentMode = $false
 
 # Version information
-$script:ModuleVersion = '3.0.0'
-$script:ModuleDate = '2026-09-27'
+$script:ModuleVersion = '3.0.1'
+$script:ModuleDate = '2026-11-23'
 
 #endregion
 
@@ -143,6 +150,13 @@ Function Write-PSDWizardLog {
     if ([string]::IsNullOrWhiteSpace($Component)) {
         $Component = (Get-PSCallStack)[1].Command
     }
+    # Keep the last entries in memory for the debug console
+    $levelText = switch ($LogLevel) { 2 { 'WARN' } 3 { 'ERROR' } default { 'INFO' } }
+    $script:PSDWizardLogBuffer.Add(('{0:HH:mm:ss} {1,-5} [{2}] {3}' -f (Get-Date), $levelText, $Component, $Message))
+    if ($script:PSDWizardLogBuffer.Count -gt 2000) {
+        $script:PSDWizardLogBuffer.RemoveRange(0, 500)
+    }
+
     # Log the message using PSDLog if available
     if (Get-Command Write-PSDLog -ErrorAction SilentlyContinue) {
         $logMessage = "{0}: {1}" -f $Component, $Message
@@ -1020,9 +1034,158 @@ Function Remove-PSDWizardTSEnvProperty {
     }
 }
 
+Function Get-PSDWizardListControl {
+    <#
+    .SYNOPSIS
+        Finds the TSEnvList_<name> control for a list, ignoring the case of the name.
+    .DESCRIPTION
+        The task sequence environment returns property names in upper case (DOMAINOUS001), while the controls are named
+        after the property (TSEnvList_DomainOUs) and FindName is case sensitive.
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [System.Windows.Window]$Window,
+
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash,
+
+        [Parameter(Mandatory=$true)]
+        [string]$ListName
+    )
+
+    $controlName = "TSEnvList_$ListName"
+    # Find the actual control name in the UIElements hashtable, ignoring case
+    $actualName = @($SyncHash.UIElements.Keys | Where-Object { [string]$_ -ieq $controlName }) | Select-Object -First 1
+    if ($actualName) {
+        return $Window.FindName([string]$actualName)
+    }
+    # If the control was not found in the UIElements hashtable, try to find it directly by name in the window
+    return $Window.FindName($controlName)
+}
+
+Function Get-PSDWizardTSEnvLists {
+    <#
+    .SYNOPSIS
+        Collects the numbered task sequence properties (DomainOUs001, DomainOUs002, ...) into named lists.
+    .DESCRIPTION
+        The TSEnvList: drive is only a view over numbered TSEnv: variables: setting tsenvlist:DomainOUs writes DOMAINOUS001, DOMAINOUS002, ...
+        and reading it reads them back. The wizard already has every TSEnv: variable in its snapshot, so the lists are built from that.
+        The same code works in WinPE and in development mode, where there is no drive.
+    .PARAMETER TSEnvSettings
+        The TSEnv: snapshot
+    .OUTPUTS
+        [hashtable] List name to values, sorted by number. The list names keep the casing of the TS environment (upper case).
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$false)]
+        [hashtable]$TSEnvSettings
+    )
+
+    $lists = @{}
+    # Return an empty hashtable if no TSEnvSettings are provided
+    if (-not $TSEnvSettings) {
+        return $lists
+    }
+
+    $numberedProperties = @{}
+    foreach ($key in $TSEnvSettings.Keys) {
+        # Match the key against the pattern for numbered properties (e.g., PropertyName001)
+        $match = [regex]::Match([string]$key, '^(?<Name>.+?)(?<Index>\d{3})$')
+        if (-not $match.Success) {
+            continue
+        }
+        # Extract the base name and index from the key
+        $name = $match.Groups['Name'].Value
+
+        # Applications and mandatory applications are handled by the Applications page
+        if ($name -in @('Applications', 'MandatoryApplications')) {
+            continue
+        }
+
+        # Initialize the array for this base name if it doesn't exist yet
+        if (-not $numberedProperties.ContainsKey($name)) {
+            $numberedProperties[$name] = @()
+        }
+
+        # Add the current key and its value to the array for this base name
+        $numberedProperties[$name] += [PSCustomObject]@{
+            Index = [int]$match.Groups['Index'].Value
+            Value = $TSEnvSettings[$key]
+        }
+    }
+
+    # Iterate over each base name and build the final lists
+    foreach ($name in $numberedProperties.Keys) {
+        # Sort the values by their index and filter out any that are null or whitespace
+        $values = @($numberedProperties[$name] | Sort-Object Index | Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_.Value)
+        } | ForEach-Object { $_.Value })
+
+        # Only add the list to the final output if it contains any values
+        if ($values.Count -gt 0) {
+            $lists[$name] = $values
+        }
+    }
+
+    return $lists
+}
+
 #endregion
 
 #region LOCALE AND TIMEZONE FUNCTIONS
+
+Function Resolve-PSDWizardLocalePath {
+    <#
+    .SYNOPSIS
+        Finds the folder that holds PSDListOfLanguages.xml and PSDListOfTimeZoneIndex.xml.
+    .DESCRIPTION
+        The indexes live in the deployment share's Scripts folder, one level above the wizard's resource folder (Scripts\PSDWizardNew).
+        The candidates are checked in order and the first folder with the language index wins.
+    .PARAMETER ResourcePath
+        The wizard resource folder (Scripts\PSDWizardNew)
+    .PARAMETER ControlPath
+        The deployment share Control folder
+    .OUTPUTS
+        [string] The folder, or the resource folder when no index was found
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    Param(
+        [Parameter(Mandatory=$false)]
+        [string]$ResourcePath,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ControlPath
+    )
+
+    $FunctionName = $MyInvocation.MyCommand.Name
+    $candidates = @()
+    if ($ResourcePath) {
+        $candidates += $ResourcePath
+        $candidates += (Split-Path -Parent $ResourcePath)
+    }
+    # PSDStart sets ScriptRoot to the cached or shared Scripts folder
+    if ($env:ScriptRoot) {
+        $candidates += $env:ScriptRoot
+    }
+    if ($ControlPath) {
+        $candidates += (Join-Path (Split-Path -Parent $ControlPath) 'Scripts')
+    }
+    $candidates = @($candidates | Where-Object { $_ } | Select-Object -Unique)
+
+    foreach ($candidate in $candidates) {
+        # Combine the path as text: Join-Path fails for a candidate on a drive that does not exist
+        if (Test-Path -LiteralPath ([System.IO.Path]::Combine($candidate, 'PSDListOfLanguages.xml')) -ErrorAction SilentlyContinue) {
+            Write-PSDWizardLog -Message "Found the language and time zone indexes in $candidate" -Component $FunctionName
+            return $candidate
+        }
+    }
+
+    Write-PSDWizardLog -Message "PSDListOfLanguages.xml was not found in: $($candidates -join '; ')" -LogLevel 2 -Component $FunctionName
+    return $ResourcePath
+}
 
 Function Get-PSDWizardLocale {
     <#
@@ -1079,7 +1242,7 @@ Function Get-PSDWizardLocale {
             return $locales
         }
         else {
-            Write-PSDWizardLog -Message "XML file not found, returning sample data" -LogLevel 1 -Component $FunctionName
+            Write-PSDWizardLog -Message "XML file not found ($xmlFile), returning sample data of 10 languages" -LogLevel 2 -Component $FunctionName
 
             # Return sample data if file not found
             return @(
@@ -1154,7 +1317,7 @@ Function Get-PSDWizardTimeZoneIndex {
             return $timezones
         }
         else {
-            Write-PSDWizardLog -Message "XML file not found, returning sample data" -LogLevel 1 -Component $FunctionName
+            Write-PSDWizardLog -Message "XML file not found ($xmlFile), returning sample data of 12 time zones" -LogLevel 2 -Component $FunctionName
 
             # Return sample data if file not found
             return @(
@@ -2118,7 +2281,7 @@ Function Update-PSDWizardDependentControlSelections {
 
     # Iterate through each Task Sequence environment list and update the corresponding control selection based on the saved settings.
     foreach ($listName in @($SyncHash.TSEnvLists.Keys)) {
-        $control = $Window.FindName("TSEnvList_$listName")
+        $control = Get-PSDWizardListControl -Window $Window -SyncHash $SyncHash -ListName $listName
         $value = [string]$SyncHash.TSEnvSettings[$listName]
         if ($control -and $control.PSObject.Properties['SelectedItem'] -and -not [string]::IsNullOrWhiteSpace($value)) {
             $matchingItem = @($control.Items | Where-Object { $_.ToString() -eq $value }) | Select-Object -First 1
@@ -3683,7 +3846,411 @@ Function Export-PSDWizardTaskSequence {
     }
 }
 
+Function Start-PSDWizardSpinner {
+    <#
+    .SYNOPSIS
+        Starts a small borderless window with a spinning ring on its own thread.
+    .DESCRIPTION
+        The wizard UI thread is blocked while task sequence rules are reprocessed, so nothing on that thread can animate.
+        The ring is driven by a separate STA runspace with its own dispatcher and is controlled through flags in the
+        returned synchronized hashtable (Show, Left, Top, Quit). The window is only shown on request.
+    .OUTPUTS
+        [hashtable] The control hashtable, or $null when the spinner could not be started
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    Param(
+        [Parameter(Mandatory=$false)]
+        [switch]$NoWait
+    )
+
+    $FunctionName = $MyInvocation.MyCommand.Name
+
+    # Initialize the synchronized hashtable for controlling the spinner window
+    $spin = [hashtable]::Synchronized(@{ 
+        Ready = $false
+        Show = $false
+        Visible = $false
+        Quit = $false
+        Angle = [double]0
+        Left = [double]0
+        Top = [double]0
+        Error = $null
+    })
+
+    try {
+        # Create and configure the STA runspace for the spinner window
+        $runspace = [runspacefactory]::CreateRunspace()
+        $runspace.ApartmentState = 'STA'
+        $runspace.ThreadOptions = 'ReuseThread'
+        $runspace.Open()
+        $runspace.SessionStateProxy.SetVariable('spin', $spin)
+
+        # Define the script block that will run in the STA runspace to create and manage the spinner window
+        $spinnerScript = {
+            try {
+                [void][System.Reflection.Assembly]::LoadWithPartialName('PresentationFramework')
+                [void][System.Reflection.Assembly]::LoadWithPartialName('PresentationCore')
+                [void][System.Reflection.Assembly]::LoadWithPartialName('WindowsBase')
+
+                # The ring is 43 wide so its 5 wide stroke fits inside the 48 wide window
+                $ring = New-Object System.Windows.Shapes.Ellipse
+                $ring.Width = 43
+                $ring.Height = 43
+                $ring.Stroke = [System.Windows.Media.Brushes]::White
+                $ring.StrokeThickness = 5
+                $ring.StrokeDashArray = [System.Windows.Media.DoubleCollection]::Parse('20,7')
+                $ring.StrokeDashCap = [System.Windows.Media.PenLineCap]::Round
+                $ring.HorizontalAlignment = 'Center'
+                $ring.VerticalAlignment = 'Center'
+                $ring.RenderTransformOrigin = New-Object System.Windows.Point(0.5, 0.5)
+                $rotate = New-Object System.Windows.Media.RotateTransform
+                $ring.RenderTransform = $rotate
+
+                # Create the spinner window and configure its properties
+                $window = New-Object System.Windows.Window
+                $window.WindowStyle = 'None'
+                $window.AllowsTransparency = $true
+                $window.Background = [System.Windows.Media.Brushes]::Transparent
+                $window.ShowInTaskbar = $false
+                $window.ShowActivated = $false
+                $window.Focusable = $false
+                $window.Topmost = $true
+                $window.ResizeMode = 'NoResize'
+                $window.WindowStartupLocation = 'Manual'
+                $window.Width = 48
+                $window.Height = 48
+                $window.Cursor = [System.Windows.Input.Cursors]::Wait
+                $window.Content = $ring
+
+                # Store the window and rotate transform in the synchronized hashtable for later control
+                $spin.Window = $window
+                $spin.Rotate = $rotate
+
+                # A timer on this thread turns the ring and follows the flags set by the wizard thread
+                $timer = New-Object System.Windows.Threading.DispatcherTimer
+                $timer.Interval = [TimeSpan]::FromMilliseconds(33)
+                $timer.Add_Tick({
+                    try {
+                        # Check if the spinner should quit and close the window if so
+                        if ($spin.Quit) {
+                            $spin.Window.Close()
+                            [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown()
+                            return
+                        }
+                        # Update the spinner window position and rotation if it should be shown
+                        if ($spin.Show) {
+                            if (-not $spin.Window.IsVisible) {
+                                $spin.Window.Left = $spin.Left
+                                $spin.Window.Top = $spin.Top
+                                $spin.Window.Show()
+                            }
+                            $spin.Rotate.Angle = ($spin.Rotate.Angle + 14) % 360
+                            $spin.Angle = $spin.Rotate.Angle
+                            $spin.Visible = $true
+                        }
+                        elseif ($spin.Window.IsVisible) {
+                            # Hide the spinner window when it should not be shown
+                            $spin.Window.Hide()
+                            $spin.Visible = $false
+                        }
+                    }
+                    catch {
+                        $spin.Error = $_.Exception.Message
+                    }
+                })
+                $timer.Start()
+
+                # Show the window once off-screen so WPF initializes now instead of on the first real use
+                $window.Left = -10000
+                $window.Top = -10000
+                $window.Show()
+                $window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+                $window.Hide()
+
+                $spin.Ready = $true
+                [System.Windows.Threading.Dispatcher]::Run()
+            }
+            catch {
+                $spin.Error = $_.Exception.Message
+            }
+        }
+
+        $powerShell = [PowerShell]::Create()
+        $powerShell.Runspace = $runspace
+        [void]$powerShell.AddScript($spinnerScript)
+        $spin.Runspace = $runspace
+        $spin.PowerShell = $powerShell
+        $spin.Handle = $powerShell.BeginInvoke()
+
+        # The caller can wait for the window itself (see Wait-PSDWizardSpinner)
+        if ($NoWait) {
+            return $spin
+        }
+
+        # Wait for the window to be built
+        if (-not (Wait-PSDWizardSpinner -Spinner $spin)) {
+            return $null
+        }
+
+        Write-PSDWizardLog -Message "Spinner window started" -Component $FunctionName
+        return $spin
+    }
+    catch {
+        Write-PSDWizardLog -Message "Unable to start the spinner window: $($_.Exception.Message)" -LogLevel 2 -Component $FunctionName
+        return $null
+    }
+}
+
+Function Wait-PSDWizardSpinner {
+    <#
+    .SYNOPSIS
+        Waits until the spinner window thread is ready.
+    .OUTPUTS
+        [bool] True when the spinner is ready to be used
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [hashtable]$Spinner
+    )
+
+    $timeout = [DateTime]::Now.AddSeconds(5)
+    while (-not $Spinner.Ready -and -not $Spinner.Error -and [DateTime]::Now -lt $timeout) {
+        Start-Sleep -Milliseconds 50
+    }
+    if (-not $Spinner.Ready) {
+        Write-PSDWizardLog -Message "Spinner window did not start: $($Spinner.Error)" -LogLevel 2 -Component $MyInvocation.MyCommand.Name
+        $Spinner.Quit = $true
+        return $false
+    }
+    return $true
+}
+
+Function Close-PSDWizardSpinner {
+    <#
+    .SYNOPSIS
+        Stops the spinner window thread started by Start-PSDWizardSpinner.
+    .PARAMETER SyncHash
+        The synchronized state hashtable holding the spinner
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash
+    )
+
+    $spin = $SyncHash.BusySpinner
+    $SyncHash.BusySpinner = $null
+    if (-not $spin) {
+        return
+    }
+
+    try {
+        $spin.Show = $false
+        $spin.Quit = $true
+        $timeout = [DateTime]::Now.AddSeconds(2)
+        while ($spin.Handle -and -not $spin.Handle.IsCompleted -and [DateTime]::Now -lt $timeout) {
+            Start-Sleep -Milliseconds 50
+        }
+        $spin.PowerShell.Dispose()
+        $spin.Runspace.Close()
+        $spin.Runspace.Dispose()
+    }
+    catch {
+        Write-PSDWizardLog -Message "Error closing the spinner window: $($_.Exception.Message)" -LogLevel 2 -Component $MyInvocation.MyCommand.Name
+    }
+}
+
+Function Set-PSDWizardBusyIndicator {
+    <#
+    .SYNOPSIS
+        Shows or hides a busy overlay with a spinning ring over the whole wizard window.
+    .DESCRIPTION
+        The overlay is added to the window's root grid the first time it is used, so it works with every theme.
+        The ring is drawn by a small window on its own thread (see Start-PSDWizardSpinner) because the UI thread
+        cannot animate anything while it is busy. If that window cannot be started, a static ring is shown instead.
+    .PARAMETER Window
+        The wizard window
+    .PARAMETER SyncHash
+        The synchronized state hashtable, used to keep the overlay controls
+    .PARAMETER Message
+        The text shown under the ring
+    .PARAMETER Hide
+        Hide the overlay instead of showing it
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [System.Windows.Window]$Window,
+
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash,
+
+        [Parameter(Mandatory=$false)]
+        [string]$Message = 'Please wait...',
+
+        [Parameter(Mandatory=$false)]
+        [switch]$Hide
+    )
+
+    $FunctionName = $MyInvocation.MyCommand.Name
+
+    try {
+        # Show the busy indicator while performing the operation
+        $rootGrid = $Window.Content -as [System.Windows.Controls.Grid]
+        if (-not $rootGrid) {
+            return
+        }
+
+        # Initialize the busy indicator if it hasn't been created yet
+        if (-not $SyncHash.BusyOverlay) {
+            # Create the spinning ring for the busy indicator
+            $ring = New-Object System.Windows.Shapes.Ellipse
+            $ring.Width = 48
+            $ring.Height = 48
+            $ring.Stroke = [System.Windows.Media.Brushes]::White
+            $ring.StrokeThickness = 5
+            $ring.StrokeDashArray = [System.Windows.Media.DoubleCollection]::Parse('20,7')
+            $ring.StrokeDashCap = [System.Windows.Media.PenLineCap]::Round
+            $ring.HorizontalAlignment = 'Center'
+            $ring.RenderTransformOrigin = New-Object System.Windows.Point(0.5, 0.5)
+            $rotate = New-Object System.Windows.Media.RotateTransform
+            $ring.RenderTransform = $rotate
+
+            # Set the initial message for the busy indicator
+            $text = New-Object System.Windows.Controls.TextBlock
+            $text.Foreground = [System.Windows.Media.Brushes]::White
+            $text.FontSize = 16
+            $text.Margin = New-Object System.Windows.Thickness(0, 14, 0, 0)
+            $text.HorizontalAlignment = 'Center'
+            $text.TextAlignment = 'Center'
+
+            # Create a panel to hold the busy indicator elements
+            $panel = New-Object System.Windows.Controls.StackPanel
+            $panel.HorizontalAlignment = 'Center'
+            $panel.VerticalAlignment = 'Center'
+            $panel.Children.Add($ring) | Out-Null
+            $panel.Children.Add($text) | Out-Null
+
+            # The translucent background also swallows mouse clicks on the controls underneath
+            $overlay = New-Object System.Windows.Controls.Border
+            $overlay.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromArgb(190, 0, 0, 0))
+            $overlay.Visibility = 'Collapsed'
+            $overlay.Child = $panel
+            [System.Windows.Controls.Panel]::SetZIndex($overlay, 1000)
+            $rootGrid.Children.Add($overlay) | Out-Null
+
+            # Store references to the busy indicator elements in the sync hash
+            $SyncHash.BusyOverlay = $overlay
+            $SyncHash.BusyText = $text
+            $SyncHash.BusyRotate = $rotate
+            $SyncHash.BusyRing = $ring
+        }
+
+        # If hiding the busy indicator, stop the spinner window and collapse the overlay
+        if ($Hide) {
+            if ($SyncHash.BusySpinner) {
+                $SyncHash.BusySpinner.Show = $false
+                $timeout = [DateTime]::Now.AddMilliseconds(300)
+                while ($SyncHash.BusySpinner.Visible -and [DateTime]::Now -lt $timeout) { Start-Sleep -Milliseconds 10 }
+            }
+            $SyncHash.BusyRotate.BeginAnimation([System.Windows.Media.RotateTransform]::AngleProperty, $null)
+            $SyncHash.BusyOverlay.Visibility = 'Collapsed'
+            [System.Windows.Input.Mouse]::OverrideCursor = $null
+        }
+        else {
+            # If showing the busy indicator, update the message and make the overlay visible
+            $SyncHash.BusyText.Text = $Message
+
+            # The ring inside the overlay is the fallback: it stays hidden while the spinner window (below) is used, so there is only one ring
+            $useSpinnerWindow = $Window.IsVisible -and -not $SyncHash.BusySpinnerFailed
+            $SyncHash.BusyRing.Visibility = if ($useSpinnerWindow) { 'Hidden' } else { 'Visible' }
+            $SyncHash.BusyOverlay.Visibility = 'Visible'
+            [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait
+
+            # This ring only turns while the UI thread is free, it is the fallback for the spinner window below
+            $duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(1))
+            $animation = New-Object System.Windows.Media.Animation.DoubleAnimation ([double]0), ([double]360), $duration
+            $animation.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+            $SyncHash.BusyRotate.BeginAnimation([System.Windows.Media.RotateTransform]::AngleProperty, $animation)
+
+            # Draw the overlay now, before the work that follows blocks the UI thread
+            $Window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+
+            # The UI thread cannot animate while it is blocked, so a separate window on its own thread turns the ring
+            if ($useSpinnerWindow) {
+                if (-not $SyncHash.BusySpinner) {
+                    $SyncHash.BusySpinner = Start-PSDWizardSpinner
+                    if (-not $SyncHash.BusySpinner) { $SyncHash.BusySpinnerFailed = $true }
+                }
+                $spinner = $SyncHash.BusySpinner
+                if ($spinner -and -not (Wait-PSDWizardSpinner -Spinner $spinner)) {
+                    # Started in the background when the wizard opened but never became ready
+                    Close-PSDWizardSpinner -SyncHash $SyncHash
+                    $SyncHash.BusySpinnerFailed = $true
+                    $spinner = $null
+                }
+                if ($spinner) {
+                    # Place the spinner window over the ring (device pixels to device independent units)
+                    $SyncHash.BusyOverlay.UpdateLayout()
+                    $screenPoint = $SyncHash.BusyRing.PointToScreen((New-Object System.Windows.Point(0, 0)))
+                    $source = [System.Windows.PresentationSource]::FromVisual($SyncHash.BusyRing)
+                    $position = $source.CompositionTarget.TransformFromDevice.Transform($screenPoint)
+                    $spinner.Left = [double]$position.X
+                    $spinner.Top = [double]$position.Y
+                    $spinner.Show = $true
+
+                    $timeout = [DateTime]::Now.AddMilliseconds(500)
+                    while (-not $spinner.Visible -and [DateTime]::Now -lt $timeout) { Start-Sleep -Milliseconds 10 }
+                }
+                else {
+                    # No spinner window, show the static ring so there is still something on screen
+                    $SyncHash.BusyRing.Visibility = 'Visible'
+                }
+            }
+        }
+    }
+    catch {
+        Write-PSDWizardLog -Message "Unable to update the busy indicator: $($_.Exception.Message)" -LogLevel 2 -Component $FunctionName
+    }
+}
+
 Function Update-PSDWizardTaskSequenceRules {
+    <#
+    .SYNOPSIS
+        Applies the selected Task Sequence settings and refreshes dependent wizard state.
+    .DESCRIPTION
+        Reprocessing the CustomSettings rules can take a while, so a busy indicator is shown until it is done.
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [string]$TaskSequenceID,
+
+        [Parameter(Mandatory=$true)]
+        [System.Windows.Window]$Window,
+
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash
+    )
+    # Show the busy indicator while applying the task sequence settings
+    Set-PSDWizardBusyIndicator -Window $Window -SyncHash $SyncHash -Message 'Grabbing task sequence properties...'
+    try {
+        # Apply the task sequence settings using the core function
+        Update-PSDWizardTaskSequenceRulesCore -TaskSequenceID $TaskSequenceID -Window $Window -SyncHash $SyncHash
+    }
+    finally {
+        # Hide the busy indicator after applying the task sequence settings
+        Set-PSDWizardBusyIndicator -Window $Window -SyncHash $SyncHash -Hide
+
+        # Let the debug console (when open) show what the selection changed
+        Update-PSDWizardDebugConsole
+    }
+}
+
+Function Update-PSDWizardTaskSequenceRulesCore {
     <#
     .SYNOPSIS
         Applies the selected Task Sequence settings and refreshes dependent wizard state.
@@ -3715,30 +4282,61 @@ Function Update-PSDWizardTaskSequenceRules {
     # Extract the rule settings for the specified TaskSequenceID from the custom settings
     $ruleSettings = $customSettings[$TaskSequenceID]
     $currentRuleProperties = if ($ruleSettings) { @($ruleSettings.Keys) } else { @() }
-    # Determine the properties that need to be cleared from the task sequence environment
-    $propertiesToClear = @($SyncHash.TaskSequenceRuleProperties) + $currentRuleProperties | Select-Object -Unique
+
+    # PSDGather owns rule processing. It may only be imported into the caller's scope, which this module cannot see.
+    $invokeRule = $null
+    $getSettings = $null
+    if (-not $script:IsDevelopmentMode) {
+        # Locate the PSDGather module, which owns the rule processing
+        $gatherModule = Get-Module -Name PSDGather | Select-Object -First 1
+        if (-not $gatherModule) {
+            $gatherModule = Import-Module PSDGather -Global -PassThru -ErrorAction SilentlyContinue -Verbose:$false
+        }
+        if ($gatherModule) {
+            $invokeRule = $gatherModule.ExportedCommands['Invoke-PSDRule']
+            $getSettings = $gatherModule.ExportedCommands['Get-PSDSettings']
+        }
+        if (-not $invokeRule) { $invokeRule = Get-Command Invoke-PSDRule -ErrorAction SilentlyContinue }
+        if (-not $getSettings) { $getSettings = Get-Command Get-PSDSettings -ErrorAction SilentlyContinue }
+        # Do not clear the current settings if they cannot be gathered again
+        if (-not $invokeRule -or -not (Get-Variable -Name iniFile -Scope Global -ValueOnly -ErrorAction SilentlyContinue)) {
+            Write-PSDWizardLog -Message "PSDGather rules are not available (Invoke-PSDRule found: $([bool]$invokeRule)); settings for [$TaskSequenceID] were not reprocessed and the current settings are unchanged" -LogLevel 3 -Component $FunctionName
+            Set-PSDWizardTSEnvProperty -Name 'TaskSequenceID' -Value $TaskSequenceID
+            $SyncHash.TSEnvSettings['TaskSequenceID'] = $TaskSequenceID
+            return
+        }
+    }
+
+    # Determine the properties that need to be cleared from the task sequence environment.
+    # Settings applied before the wizard opened (for example by a DefaultGateway rule that maps to a Task Sequence section) are not tracked,
+    # so the properties of every Task Sequence section are treated as applied. That keeps settings meant for one Task Sequence from carrying over to another.
+    $taskSequenceSectionProperties = @(foreach ($taskSequence in @($SyncHash.TaskSequences)) {
+        $sectionSettings = $customSettings[[string]$taskSequence.ID]
+        if ($sectionSettings) { $sectionSettings.Keys }
+    })
+    $propertiesToClear = @(@($SyncHash.TaskSequenceRuleProperties) + $taskSequenceSectionProperties + $currentRuleProperties |
+        Where-Object { $_ } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+
+    # Numbered properties (DomainOUs001, ...) are cleared once per list, all other properties one by one
     $listNamesToClear = @($propertiesToClear | ForEach-Object {
         if ($_ -match '^(?<Name>.+?)\d{3}$') { $Matches['Name'] }
-    } | Select-Object -Unique)
+    } | Sort-Object -Unique)
+    $plainPropertiesToClear = @($propertiesToClear | Where-Object { $_ -notmatch '^.+?\d{3}$' -and $_ -ne 'TaskSequenceID' })
+    $currentListNames = @($currentRuleProperties | ForEach-Object {
+        if ($_ -match '^(?<Name>.+?)\d{3}$') { $Matches['Name'] }
+    } | Sort-Object -Unique)
 
-    # Clear the properties from the task sequence environment that are no longer needed
-    foreach ($propertyName in $propertiesToClear) {
-        if ($propertyName -eq 'TaskSequenceID') {
-            continue
+    foreach ($listName in $listNamesToClear) {
+        # Remove all task sequence environment properties that match the list name pattern
+        Remove-PSDWizardTSEnvProperty -Name "$listName*" -WildCard
+        # Clear the corresponding list from the TSEnvList drive if it exists
+        if (-not $script:IsDevelopmentMode -and (Get-PSDrive -Name 'TSEnvList' -ErrorAction SilentlyContinue)) {
+            Set-Item -LiteralPath "TSEnvList:\$listName" -Value @() -Force -ErrorAction SilentlyContinue
         }
-        # Check if the property name matches the pattern for numbered lists and handle accordingly
-        if ($propertyName -match '^(?<Name>.+?)\d{3}$') {
-            $listName = $Matches['Name']
-            # Remove all task sequence environment properties that match the list name pattern
-            Remove-PSDWizardTSEnvProperty -Name "$listName*" -WildCard
-            # Clear the corresponding list from the TSEnvList drive if it exists
-            if (-not $script:IsDevelopmentMode -and (Get-PSDrive -Name 'TSEnvList' -ErrorAction SilentlyContinue)) {
-                Set-Item -LiteralPath "TSEnvList:\$listName" -Value @() -Force -ErrorAction SilentlyContinue
-            }
-        }
-        else {
-            Remove-PSDWizardTSEnvProperty -Name $propertyName
-        }
+    }
+    foreach ($propertyName in $plainPropertiesToClear) {
+        # Remove the property from the task sequence environment if it is not part of a numbered list
+        Remove-PSDWizardTSEnvProperty -Name $propertyName
     }
 
     # Ensure the TaskSequenceID is set in the task sequence environment
@@ -3746,54 +4344,71 @@ Function Update-PSDWizardTaskSequenceRules {
 
     # If in development mode, update the task sequence environment settings with the current rule properties
     if ($script:IsDevelopmentMode) {
+        # Update the task sequence environment settings with the current rule properties in development mode
         foreach ($propertyName in $currentRuleProperties) {
             $SyncHash.TSEnvSettings[$propertyName] = $ruleSettings[$propertyName]
         }
-    }
-    # If not in development mode but the Invoke-PSDRule command is available, reprocess the custom settings section for the TaskSequenceID
-    elseif (Get-Command Invoke-PSDRule -ErrorAction SilentlyContinue) {
-        Write-PSDWizardLog -Message "Reprocessing CustomSettings section [$TaskSequenceID]" -Component $FunctionName
-        Invoke-PSDRule -RuleName $TaskSequenceID
 
-        # Clear the existing task sequence environment settings before reprocessing
+        # Cleared properties the selected section does not set fall back to [Default] (first value wins, lists are replaced as a whole)
+        $defaultRuleSettings = $customSettings['Default']
+        foreach ($propertyName in @($defaultRuleSettings.Keys)) {
+            if ($propertyName -match '^(?<Name>.+?)\d{3}$') {
+                $restore = $Matches['Name'] -in $listNamesToClear -and $Matches['Name'] -notin $currentListNames
+            }
+            else {
+                $restore = $propertyName -in $plainPropertiesToClear -and [string]::IsNullOrWhiteSpace([string]$SyncHash.TSEnvSettings[$propertyName])
+            }
+            if ($restore) {
+                $SyncHash.TSEnvSettings[$propertyName] = $defaultRuleSettings[$propertyName]
+            }
+        }
+    }
+    # If not in development mode, let PSDGather reprocess the custom settings section for the TaskSequenceID
+    else {
+        Write-PSDWizardLog -Message "Reprocessing CustomSettings section [$TaskSequenceID]" -Component $FunctionName
+        try {
+            # Invoke the rule for the current TaskSequenceID to reprocess the custom settings section
+            & $invokeRule -RuleName $TaskSequenceID
+        }
+        catch {
+            Write-PSDWizardLog -Message "Invoke-PSDRule failed for [$TaskSequenceID]: $($_.Exception.Message)" -LogLevel 3 -Component $FunctionName
+        }
+
+        # Cleared properties the selected section does not set fall back to [Default]. Only those are processed, running the whole
+        # section again would add its lists a second time. PSDGather keeps the rules: first value wins and tokens are resolved.
+        try {
+            $defaultSection = (Get-Variable -Name iniFile -Scope Global -ValueOnly -ErrorAction SilentlyContinue)['Default']
+            if ($getSettings -and $defaultSection) {
+                $fallbackSection = [ordered]@{}
+                foreach ($propertyName in @($defaultSection.Keys)) {
+                    if ($propertyName -match '^(?<Name>.+?)\d{3}$') {
+                        $restore = $Matches['Name'] -in $listNamesToClear -and $Matches['Name'] -notin $currentListNames
+                    }
+                    else {
+                        $restore = $propertyName -in $plainPropertiesToClear
+                    }
+                    if ($restore) { $fallbackSection[$propertyName] = $defaultSection[$propertyName] }
+                }
+                if ($fallbackSection.Count -gt 0) {
+                    Write-PSDWizardLog -Message "Restoring $($fallbackSection.Count) [Default] values that [$TaskSequenceID] does not set" -Component $FunctionName
+                    & $getSettings $fallbackSection
+                }
+            }
+        }
+        catch {
+            Write-PSDWizardLog -Message "Unable to restore [Default] values after [$TaskSequenceID]: $($_.Exception.Message)" -LogLevel 2 -Component $FunctionName
+        }
+
+        # iterate over each key in the current task sequence environment settings and remove it
         foreach ($key in @($SyncHash.TSEnvSettings.Keys)) {
             $SyncHash.TSEnvSettings.Remove($key)
         }
-        # Rebuild the task sequence environment settings from the current environment properties
+
+        # iterate over each property in the current task sequence environment and rebuild the settings in the sync hash
         foreach ($property in @(Get-PSDWizardTSEnvProperty '*' -WildCard)) {
             if ($property.Name) {
+                # Only include properties that have a valid name before adding them to the sync hash
                 $SyncHash.TSEnvSettings[[string]$property.Name] = $property.Value
-            }
-        }
-    }
-    else {
-        # If Invoke-PSDRule is unavailable, log a warning indicating that the CustomSettings section was not reprocessed
-        Write-PSDWizardLog -Message "Invoke-PSDRule is unavailable; TaskSequenceID was set but its CustomSettings section was not reprocessed" -LogLevel 2 -Component $FunctionName
-    }
-
-    # Restore shared numbered lists when the previous Task Sequence supplied an override
-    # but the newly selected section does not define that list.
-    $previousListNames = @($SyncHash.TaskSequenceRuleProperties | ForEach-Object {
-        if ($_ -match '^(?<Name>.+?)\d{3}$') { $Matches['Name'] }
-    } | Select-Object -Unique)
-    $currentListNames = @($currentRuleProperties | ForEach-Object {
-        if ($_ -match '^(?<Name>.+?)\d{3}$') { $Matches['Name'] }
-    } | Select-Object -Unique)
-    $defaultRuleSettings = $customSettings['Default']
-    foreach ($listName in $previousListNames | Where-Object { $_ -notin $currentListNames }) {
-        if (-not $defaultRuleSettings) { continue }
-
-        $defaultListProperties = @($defaultRuleSettings.Keys | Where-Object {
-            $_ -match ('^{0}\d{{3}}$' -f [regex]::Escape($listName))
-        })
-        foreach ($propertyName in $defaultListProperties) {
-            $value = $defaultRuleSettings[$propertyName]
-            if ($script:IsDevelopmentMode) {
-                $SyncHash.TSEnvSettings[$propertyName] = $value
-            }
-            else {
-                Set-PSDWizardTSEnvProperty -Name $propertyName -Value $value
-                $SyncHash.TSEnvSettings[$propertyName] = $value
             }
         }
     }
@@ -3801,11 +4416,13 @@ Function Update-PSDWizardTaskSequenceRules {
     # update the script-level hash with the current rule properties and task sequence environment settings
     $SyncHash.TaskSequenceRuleProperties = $currentRuleProperties
     $SyncHash.TSEnvSettings['TaskSequenceID'] = $TaskSequenceID
-    $SyncHash.TSEnvLists = Get-PSDWizardNumberedTSEnvLists -TSEnvSettings $SyncHash.TSEnvSettings
+    $SyncHash.TSEnvLists = Get-PSDWizardTSEnvLists -TSEnvSettings $SyncHash.TSEnvSettings
+    Write-PSDWizardLog -Message "Lists after applying [$TaskSequenceID]: $((@($SyncHash.TSEnvLists.Keys | Sort-Object | ForEach-Object { '{0}={1}' -f $_, @($SyncHash.TSEnvLists[$_]).Count }) -join ', '))" -Component $FunctionName
 
     # iterate through the UI elements that correspond to TSEnv settings and update their values accordingly
     foreach ($entry in @($SyncHash.UIElements.GetEnumerator() | Where-Object { $_.Key -like 'TSEnv_*' })) {
         $propertyName = ([string]$entry.Key).Substring('TSEnv_'.Length)
+        # Retrieve the value for the current property from the task sequence environment settings, or use an empty string if not present
         $value = if ($SyncHash.TSEnvSettings.ContainsKey($propertyName)) {
             $SyncHash.TSEnvSettings[$propertyName]
         }
@@ -3818,7 +4435,14 @@ Function Update-PSDWizardTaskSequenceRules {
         }
         # Update the UI element with the corresponding TSEnv setting value
         switch ($entry.Value.GetType().Name) {
-            'PasswordBox' { $entry.Value.Password = [string]$value }
+            'PasswordBox' {
+                $entry.Value.Password = [string]$value
+                # A password supplied by CustomSettings/TSEnv is already confirmed (MDT has no confirm box)
+                if ($entry.Key -eq 'TSEnv_DomainAdminPassword') {
+                    $domainConfirmBox = $Window.FindName('_DomainAdminConfirmPassword')
+                    if ($domainConfirmBox) { $domainConfirmBox.Password = [string]$value }
+                }
+            }
             'Label' { $entry.Value.Content = [string]$value }
             default {
                 if ($entry.Value.PSObject.Properties['Text']) {
@@ -3828,9 +4452,10 @@ Function Update-PSDWizardTaskSequenceRules {
         }
     }
 
-    # Clear the items in the numbered TSEnv lists before repopulating them
+    # Iterate over each list name that needs to be cleared and remove its items from the corresponding UI list control
     foreach ($listName in $listNamesToClear) {
-        $listControl = $Window.FindName("TSEnvList_$listName")
+        $listControl = Get-PSDWizardListControl -Window $Window -SyncHash $SyncHash -ListName $listName
+        # Skip processing if the list control is not found or does not have an 'Items' property
         if ($listControl -and $listControl.PSObject.Properties['Items']) {
             $listControl.Items.Clear()
         }
@@ -3838,7 +4463,8 @@ Function Update-PSDWizardTaskSequenceRules {
 
     # Repopulate the numbered TSEnv lists with the updated values
     foreach ($listName in $SyncHash.TSEnvLists.Keys) {
-        $listControl = $Window.FindName("TSEnvList_$listName")
+        $listControl = Get-PSDWizardListControl -Window $Window -SyncHash $SyncHash -ListName $listName
+        # Skip processing if the list control is not found or does not have an 'Items' property
         if (-not $listControl -or -not $listControl.PSObject.Properties['Items']) {
             continue
         }
@@ -3875,11 +4501,11 @@ Function Update-PSDWizardTaskSequenceRules {
     }
 
     # Handle the DomainOUs list and MachineObjectOU text box visibility and values
-    $ouValues = @($SyncHash.TSEnvLists['DomainOUs'])
+    $ouValues = @($SyncHash.TSEnvLists['DomainOUs'] | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
     $ouList = $Window.FindName('TSEnvList_DomainOUs')
     $ouText = $Window.FindName('TSEnv_MachineObjectOU')
     # If there are multiple OU values, show the list; otherwise, show the text box for a single OU value
-    if ($ouValues.Count -gt 1) {
+    if ($ouValues.Count -gt 1 -and $ouList) {
         $ouList.Items.Insert(0, '<Not specified>')
         $ouList.SelectedIndex = 0
         $ouList.Visibility = 'Visible'
@@ -3970,6 +4596,622 @@ Function Update-PSDWizardTaskSequenceRules {
 #endregion
 
 #region SPLASHSCREEN FUNCTIONS
+
+#region DEBUG CONSOLE FUNCTIONS
+
+Function ConvertTo-PSDWizardDebugText {
+    <#
+    .SYNOPSIS
+        Formats a task sequence value for the debug console and masks passwords.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
+        [string]$Name,
+
+        [Parameter(Mandatory=$false)]
+        $Value
+    )
+
+    if ($Name -match 'password|pwd|secret') {
+        if ([string]::IsNullOrEmpty([string]$Value)) { return '' }
+        return '********'
+    }
+    if ($Value -is [array]) {
+        return (@($Value | ForEach-Object { [string]$_ }) -join '; ')
+    }
+    return [string]$Value
+}
+
+Function Get-PSDWizardDebugLiveVariable {
+    <#
+    .SYNOPSIS
+        Reads every variable from the TSEnv: drive without writing to the wizard log.
+    .OUTPUTS
+        [hashtable] Available (bool) and Variables (name to value)
+    #>
+    [CmdletBinding()]
+    Param()
+
+    $variables = @{}
+    $available = $false
+    if (-not $script:IsDevelopmentMode -and (Get-PSDrive -Name 'TSEnv' -ErrorAction SilentlyContinue)) {
+        try {
+            foreach ($item in @(Get-ChildItem -Path 'TSEnv:' -ErrorAction Stop)) {
+                if ($item.Name) { $variables[[string]$item.Name] = $item.Value }
+            }
+            $available = $true
+        }
+        catch {
+            $available = $false
+        }
+    }
+    return @{ Available = $available; Variables = $variables }
+}
+
+Function Get-PSDWizardDebugVariableRow {
+    <#
+    .SYNOPSIS
+        Builds the rows of the TSEnv: tab: the live TSEnv: value, the wizard's snapshot of it and what changed.
+    .DESCRIPTION
+        State is 'differs' when the wizard's snapshot no longer matches TSEnv:, and 'changed' or 'new' when the value changed since
+        the previous refresh (kept until the changes are cleared).
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash
+    )
+
+    $ctx = $SyncHash.DebugConsole
+    $live = Get-PSDWizardDebugLiveVariable
+    $snapshot = $SyncHash.TSEnvSettings
+    if (-not $snapshot) { $snapshot = @{} }
+
+    $names = @(@($live.Variables.Keys) + @($snapshot.Keys) + $(if ($ctx.Baseline) { @($ctx.Baseline.Keys) }) | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+    $firstRefresh = $null -eq $ctx.Baseline
+    $baseline = @{}
+
+    $rows = foreach ($name in $names) {
+        $liveRaw = if ($live.Available -and $live.Variables.ContainsKey($name)) { ConvertTo-PSDWizardDebugText -Name '' -Value $live.Variables[$name] } else { '' }
+        $snapshotRaw = if ($snapshot.ContainsKey($name)) { ConvertTo-PSDWizardDebugText -Name '' -Value $snapshot[$name] } else { '' }
+        $current = if ($live.Available) { $liveRaw } else { $snapshotRaw }
+        $baseline[$name] = $current
+
+        # Remember what changed since the previous refresh until the changes are cleared
+        if (-not $firstRefresh) {
+            if ($ctx.Baseline.ContainsKey($name)) {
+                if ($ctx.Baseline[$name] -ne $current) {
+                    $ctx.Changes[$name] = if ([string]::IsNullOrEmpty($current)) { 'removed' } else { 'changed' }
+                }
+            }
+            elseif (-not [string]::IsNullOrEmpty($current)) {
+                $ctx.Changes[$name] = 'new'
+            }
+        }
+
+        $state = ''
+        if ($live.Available -and $liveRaw -ne $snapshotRaw) { $state = 'differs' }
+        elseif ($ctx.Changes.ContainsKey($name)) { $state = $ctx.Changes[$name] }
+
+        [pscustomobject]@{
+            Name     = $name
+            Live     = if ($live.Available) { ConvertTo-PSDWizardDebugText -Name $name -Value $liveRaw } else { '(TSEnv: not available)' }
+            Snapshot = ConvertTo-PSDWizardDebugText -Name $name -Value $snapshotRaw
+            State    = $state
+        }
+    }
+    $ctx.Baseline = $baseline
+    return @($rows)
+}
+
+Function Get-PSDWizardDebugListRow {
+    <#
+    .SYNOPSIS
+        Builds the rows of the Lists tab: what the wizard built for its dropdowns next to what the TSEnvList: drive returns.
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash
+    )
+
+    $driveLists = @{}
+    $driveAvailable = $false
+    if (-not $script:IsDevelopmentMode -and (Get-PSDrive -Name 'TSEnvList' -ErrorAction SilentlyContinue)) {
+        try {
+            foreach ($item in @(Get-ChildItem -Path 'TSEnvList:' -ErrorAction Stop)) {
+                if ($item.Name) { $driveLists[[string]$item.Name] = @($item.Value | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) }
+            }
+            $driveAvailable = $true
+        }
+        catch {
+            $driveAvailable = $false
+        }
+    }
+
+    $wizardLists = if ($SyncHash.TSEnvLists) { $SyncHash.TSEnvLists } else { @{} }
+    $names = @(@($wizardLists.Keys) + @($driveLists.Keys) | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+
+    $rows = foreach ($name in $names) {
+        $wizardValues = @($wizardLists[$name])
+        $driveValues = @($driveLists[$name])
+        $state = ''
+        # Applications are not built into dropdown lists, so they are not compared
+        if ($driveAvailable -and $name -notin @('Applications', 'MandatoryApplications') -and $wizardValues.Count -ne $driveValues.Count) {
+            $state = 'differs'
+        }
+        $shown = if ($wizardValues.Count -gt 0) { $wizardValues } else { $driveValues }
+        [pscustomobject]@{
+            List   = $name
+            Wizard = $wizardValues.Count
+            Drive  = if ($driveAvailable) { $driveValues.Count } else { 'n/a' }
+            Values = (@($shown | ForEach-Object { [string]$_ }) -join '; ')
+            State  = $state
+        }
+    }
+    return @($rows)
+}
+
+Function Get-PSDWizardDebugStateText {
+    <#
+    .SYNOPSIS
+        Summarizes the wizard's own state for the Wizard state tab.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash
+    )
+
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    $add = { param($label, $value) $lines.Add(('{0,-30} {1}' -f $label, $value)) }
+
+    & $add 'Module version' $script:ModuleVersion
+    & $add 'Development mode' $script:IsDevelopmentMode
+    & $add 'Theme / language' "$($SyncHash.Theme) / $($SyncHash.Language)"
+    & $add 'Resource path' $SyncHash.ResourcePath
+    & $add 'Control path' $SyncHash.ControlPath
+    & $add 'TaskSequenceID (snapshot)' ([string]$SyncHash.TSEnvSettings['TaskSequenceID'])
+    if (-not $script:IsDevelopmentMode -and (Get-PSDrive -Name 'TSEnv' -ErrorAction SilentlyContinue)) {
+        & $add 'TaskSequenceID (TSEnv:)' ([string](Get-Item -Path 'TSEnv:\TaskSequenceID' -ErrorAction SilentlyContinue).Value)
+    }
+    & $add 'Task sequences loaded' @($SyncHash.TaskSequences).Count
+    & $add 'Applications shown' @($SyncHash.Applications).Count
+    & $add 'Mandatory application GUIDs' (@($SyncHash.MandatoryApplicationGuids) -join ', ')
+    & $add 'TSEnv settings in snapshot' @($SyncHash.TSEnvSettings.Keys).Count
+    & $add 'Lists built' (@($SyncHash.TSEnvLists.Keys | Sort-Object | ForEach-Object { '{0}={1}' -f $_, @($SyncHash.TSEnvLists[$_]).Count }) -join ', ')
+    & $add 'Keys applied by last TS' (@($SyncHash.TaskSequenceRuleProperties) -join ', ')
+    & $add 'Spinner window' $(if ($SyncHash.BusySpinnerFailed) { 'failed' } elseif ($SyncHash.BusySpinner) { 'running' } else { 'not started' })
+
+    $lines.Add('')
+    $lines.Add('Pages')
+    $tabControl = $SyncHash.Window.FindName('_wizTabControl')
+    if ($tabControl) {
+        foreach ($item in $tabControl.Items) {
+            $lines.Add(('  {0,-26} {1,-14} {2}' -f ([string]$item.Header), $item.Visibility, $(if ($item.IsSelected) { '<- current' } else { '' })))
+        }
+    }
+    return ($lines -join "`r`n")
+}
+
+Function Get-PSDWizardDebugLogLine {
+    <#
+    .SYNOPSIS
+        Returns the log lines for the Log tab, either from this wizard session or from the PSD log file.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    Param(
+        [Parameter(Mandatory=$false)]
+        [string]$Source = 'session',
+
+        [Parameter(Mandatory=$false)]
+        [string]$Filter = ''
+    )
+
+    $lines = @()
+    if ($Source -like 'PSD*') {
+        $logPath = Get-Variable -Name PSDLogPath -Scope Global -ValueOnly -ErrorAction SilentlyContinue
+        if ($logPath -and (Test-Path -LiteralPath $logPath)) {
+            $lines = @(Get-Content -LiteralPath $logPath -Tail 400 -ErrorAction SilentlyContinue | ForEach-Object {
+                if ($_ -match '<!\[LOG\[(?<m>.*?)\]LOG\]!><time="(?<t>[^"]{8})[^"]*".*?type="(?<ty>\d)"') {
+                    $level = switch ($Matches['ty']) { '2' { 'WARN' } '3' { 'ERROR' } default { 'INFO' } }
+                    '{0} {1,-5} {2}' -f $Matches['t'], $level, $Matches['m']
+                }
+                else { $_ }
+            })
+        }
+        else {
+            $lines = @("The PSD log file was not found ($logPath).")
+        }
+    }
+    else {
+        $lines = @($script:PSDWizardLogBuffer | Select-Object -Last 400)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Filter)) {
+        $lines = @($lines | Where-Object { $_ -like "*$Filter*" })
+    }
+    return $lines
+}
+
+Function Update-PSDWizardDebugConsole {
+    <#
+    .SYNOPSIS
+        Refreshes the debug console. Does nothing when the console is not open.
+    .DESCRIPTION
+        Called when a tab is selected, from the Refresh button and after a task sequence selection, so the tabs follow what the wizard does.
+    #>
+    [CmdletBinding()]
+    Param()
+
+    $SyncHash = $script:PSDWizardSyncHash
+    $ctx = if ($SyncHash) { $SyncHash.DebugConsole } else { $null }
+    if (-not $ctx -or -not $ctx.Window -or -not $ctx.Window.IsVisible) {
+        return
+    }
+
+    try {
+        # The variables are read on every refresh so changes are noticed even while another tab is shown
+        $variableRows = @(Get-PSDWizardDebugVariableRow -SyncHash $SyncHash)
+        $selected = [string]$ctx.Tabs.SelectedItem.Name
+
+        switch ($selected) {
+            'tabVariables' {
+                $filter = $ctx.VariableFilter.Text
+                $rows = @($variableRows | Where-Object {
+                    ([string]::IsNullOrWhiteSpace($filter) -or $_.Name -like "*$filter*" -or $_.Live -like "*$filter*" -or $_.Snapshot -like "*$filter*") -and
+                    (-not $ctx.OnlyChanged.IsChecked -or $_.State)
+                })
+                $ctx.VariableGrid.ItemsSource = $rows
+                $ctx.Status.Text = "$($rows.Count) of $($variableRows.Count) variables, $(@($variableRows | Where-Object State).Count) changed or differing"
+            }
+            'tabLists' {
+                $rows = @(Get-PSDWizardDebugListRow -SyncHash $SyncHash)
+                $ctx.ListGrid.ItemsSource = $rows
+                $ctx.Status.Text = "$($rows.Count) lists"
+            }
+            'tabState' {
+                $ctx.StateText.Text = Get-PSDWizardDebugStateText -SyncHash $SyncHash
+                $ctx.Status.Text = 'Wizard state'
+            }
+            'tabLog' {
+                $lines = @(Get-PSDWizardDebugLogLine -Source ([string]$ctx.LogSource.SelectedItem) -Filter $ctx.LogFilter.Text)
+                $ctx.LogText.Text = $lines -join "`r`n"
+                $ctx.LogText.ScrollToEnd()
+                $ctx.Status.Text = "$($lines.Count) log lines"
+            }
+            default {
+                $ctx.Status.Text = 'Run a command in the wizard session. $SyncHash is the wizard state, $Window the wizard window.'
+            }
+        }
+    }
+    catch {
+        $ctx.Status.Text = "Refresh failed: $($_.Exception.Message)"
+    }
+}
+
+Function Invoke-PSDWizardDebugCommand {
+    <#
+    .SYNOPSIS
+        Runs a command in the wizard's own session and shows the output in the console tab.
+    .DESCRIPTION
+        The command runs on the wizard thread, so it sees the same TSEnv: and TSEnvList: drives, modules and state as the wizard.
+        The wizard waits while it runs. $SyncHash (wizard state) and $Window (wizard window) are available to the command.
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$false)]
+        [string]$Command
+    )
+
+    $SyncHash = $script:PSDWizardSyncHash
+    $ctx = if ($SyncHash) { $SyncHash.DebugConsole } else { $null }
+    if (-not $ctx -or [string]::IsNullOrWhiteSpace($Command)) {
+        return
+    }
+
+    $Window = $SyncHash.Window
+    $ctx.History.Add($Command) | Out-Null
+    $ctx.HistoryIndex = $ctx.History.Count
+
+    $started = Get-Date
+    try {
+        # A script block keeps error messages about the command itself and still sees $SyncHash and $Window
+        $text = & ([scriptblock]::Create($Command)) *>&1 | Out-String -Width 200
+    }
+    catch {
+        $text = ($_ | Out-String)
+    }
+    $elapsed = ((Get-Date) - $started).TotalMilliseconds
+
+    $ctx.Output.AppendText("PS> $Command`r`n$text`r`n")
+    if ($ctx.Output.Text.Length -gt 60000) {
+        $ctx.Output.Text = $ctx.Output.Text.Substring($ctx.Output.Text.Length - 40000)
+    }
+    $ctx.Output.ScrollToEnd()
+    $ctx.Status.Text = ('Ran in {0:N0} ms' -f $elapsed)
+}
+
+Function Save-PSDWizardDebugSnapshot {
+    <#
+    .SYNOPSIS
+        Writes the variables, lists, wizard state and log of the debug console to a text file next to the PSD logs.
+    .OUTPUTS
+        [string] The path of the snapshot
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    Param()
+
+    $SyncHash = $script:PSDWizardSyncHash
+    $logPath = Get-Variable -Name PSDLogPath -Scope Global -ValueOnly -ErrorAction SilentlyContinue
+    $folder = if ($logPath) { Split-Path -Parent $logPath } else { $env:TEMP }
+    if ([string]::IsNullOrWhiteSpace($folder) -or -not (Test-Path -LiteralPath $folder)) { $folder = $env:TEMP }
+    $path = Join-Path $folder ('PSDWizard_Debug_{0:yyyyMMdd_HHmmss}.txt' -f (Get-Date))
+
+    $sections = @()
+    $sections += '===== Wizard state ====='
+    $sections += Get-PSDWizardDebugStateText -SyncHash $SyncHash
+    $sections += ''
+    $sections += '===== Lists ====='
+    $sections += (Get-PSDWizardDebugListRow -SyncHash $SyncHash | Format-Table List, Wizard, Drive, State, Values -AutoSize -Wrap | Out-String -Width 250)
+    $sections += '===== TSEnv: variables ====='
+    $sections += (Get-PSDWizardDebugVariableRow -SyncHash $SyncHash | Format-Table Name, Live, Snapshot, State -AutoSize -Wrap | Out-String -Width 250)
+    $sections += '===== Wizard log (this session) ====='
+    $sections += (Get-PSDWizardDebugLogLine -Source 'session') -join "`r`n"
+
+    Set-Content -LiteralPath $path -Value ($sections -join "`r`n") -Encoding UTF8
+    return $path
+}
+
+Function Show-PSDWizardDebugConsole {
+    <#
+    .SYNOPSIS
+        Opens the debug console next to the wizard, or brings it to the front when it is already open.
+    #>
+    [CmdletBinding()]
+    Param()
+
+    $FunctionName = $MyInvocation.MyCommand.Name
+    $SyncHash = $script:PSDWizardSyncHash
+    if (-not $SyncHash -or -not $SyncHash.Window) {
+        return
+    }
+
+    if ($SyncHash.DebugConsole -and $SyncHash.DebugConsole.Window -and $SyncHash.DebugConsole.Window.IsVisible) {
+        $SyncHash.DebugConsole.Window.Activate() | Out-Null
+        Update-PSDWizardDebugConsole
+        return
+    }
+
+    try {
+        $xaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="PSD Wizard Debug Console" Width="860" Height="540" ShowInTaskbar="False" Topmost="True"
+        WindowStartupLocation="Manual" FontFamily="Segoe UI" FontSize="12">
+    <DockPanel>
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="6">
+            <Button x:Name="btnRefresh" Content="Refresh" Width="80" Margin="0,0,6,0"/>
+            <Button x:Name="btnClearChanges" Content="Clear changes" Width="100" Margin="0,0,6,0"/>
+            <Button x:Name="btnSave" Content="Save snapshot" Width="100" Margin="0,0,10,0"/>
+            <TextBlock x:Name="txtStatus" VerticalAlignment="Center" Foreground="Gray"/>
+        </StackPanel>
+        <TabControl x:Name="tabs" Margin="6,0,6,6">
+            <TabItem Header="TSEnv:" x:Name="tabVariables">
+                <DockPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="0,6">
+                        <TextBlock Text="Filter" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <CheckBox x:Name="chkOnlyChanged" Content="Only changed or differing" DockPanel.Dock="Right" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                        <TextBox x:Name="txtVariableFilter"/>
+                    </DockPanel>
+                    <DataGrid x:Name="gridVariables" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="210"/>
+                            <DataGridTextColumn Header="TSEnv: (live)" Binding="{Binding Live}" Width="*"/>
+                            <DataGridTextColumn Header="Wizard snapshot" Binding="{Binding Snapshot}" Width="*"/>
+                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="70"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+            <TabItem Header="Lists" x:Name="tabLists">
+                <DataGrid x:Name="gridLists" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal" Margin="0,6,0,0">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="List" Binding="{Binding List}" Width="170"/>
+                        <DataGridTextColumn Header="Wizard" Binding="{Binding Wizard}" Width="60"/>
+                        <DataGridTextColumn Header="TSEnvList:" Binding="{Binding Drive}" Width="80"/>
+                        <DataGridTextColumn Header="Values" Binding="{Binding Values}" Width="*"/>
+                        <DataGridTextColumn Header="State" Binding="{Binding State}" Width="70"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+            <TabItem Header="Wizard state" x:Name="tabState">
+                <TextBox x:Name="txtState" IsReadOnly="True" FontFamily="Consolas, Lucida Console, Courier New" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Margin="0,6,0,0"/>
+            </TabItem>
+            <TabItem Header="Log" x:Name="tabLog">
+                <DockPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="0,6">
+                        <ComboBox x:Name="cmbLogSource" DockPanel.Dock="Right" Width="190" Margin="8,0,0,0">
+                            <ComboBoxItem Content="This wizard session" IsSelected="True"/>
+                            <ComboBoxItem Content="PSD log file (tail)"/>
+                        </ComboBox>
+                        <TextBlock Text="Filter" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBox x:Name="txtLogFilter"/>
+                    </DockPanel>
+                    <TextBox x:Name="txtLog" IsReadOnly="True" FontFamily="Consolas, Lucida Console, Courier New" FontSize="11" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+                </DockPanel>
+            </TabItem>
+            <TabItem Header="Console" x:Name="tabConsole">
+                <Grid Margin="0,6,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBox x:Name="txtOutput" IsReadOnly="True" FontFamily="Consolas, Lucida Console, Courier New" Background="#1E1E1E" Foreground="#DCDCDC" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+                    <DockPanel Grid.Row="1" Margin="0,6,0,0">
+                        <Button x:Name="btnClearOutput" Content="Clear" Width="60" DockPanel.Dock="Right" Margin="6,0,0,0"/>
+                        <Button x:Name="btnRun" Content="Run" Width="60" DockPanel.Dock="Right" Margin="6,0,0,0"/>
+                        <TextBlock Text="PS&gt;" VerticalAlignment="Center" FontFamily="Consolas, Lucida Console, Courier New" Margin="0,0,6,0"/>
+                        <TextBox x:Name="txtInput" FontFamily="Consolas, Lucida Console, Courier New"/>
+                    </DockPanel>
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>
+'@
+        $window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$xaml)))
+        $window.Owner = $SyncHash.Window
+
+        # Place it beside the wizard, inside the work area
+        $workArea = [System.Windows.SystemParameters]::WorkArea
+        $window.Left = [Math]::Max(0, [Math]::Min($workArea.Width - $window.Width, $SyncHash.Window.Left + 30))
+        $window.Top = [Math]::Max(0, [Math]::Min($workArea.Height - $window.Height, $SyncHash.Window.Top + 30))
+
+        # The handlers below run after this function returned, so they reach the controls through the shared state
+        $SyncHash.DebugConsole = @{
+            Window         = $window
+            Tabs           = $window.FindName('tabs')
+            Status         = $window.FindName('txtStatus')
+            VariableGrid   = $window.FindName('gridVariables')
+            VariableFilter = $window.FindName('txtVariableFilter')
+            OnlyChanged    = $window.FindName('chkOnlyChanged')
+            ListGrid       = $window.FindName('gridLists')
+            StateText      = $window.FindName('txtState')
+            LogText        = $window.FindName('txtLog')
+            LogFilter      = $window.FindName('txtLogFilter')
+            LogSource      = $window.FindName('cmbLogSource')
+            Output         = $window.FindName('txtOutput')
+            Input          = $window.FindName('txtInput')
+            Baseline       = $null
+            Changes        = @{}
+            History        = New-Object 'System.Collections.Generic.List[string]'
+            HistoryIndex   = 0
+        }
+        $ctx = $SyncHash.DebugConsole
+
+        $window.FindName('btnRefresh').Add_Click({ Update-PSDWizardDebugConsole })
+        $window.FindName('btnClearChanges').Add_Click({
+            $script:PSDWizardSyncHash.DebugConsole.Changes = @{}
+            Update-PSDWizardDebugConsole
+        })
+        $window.FindName('btnSave').Add_Click({
+            $savedPath = Save-PSDWizardDebugSnapshot
+            $script:PSDWizardSyncHash.DebugConsole.Status.Text = "Saved $savedPath"
+        })
+        $ctx.Tabs.Add_SelectionChanged({
+            param($sender, $e)
+            # Selection events of controls inside a tab bubble up, only react to the tab itself
+            if ($e.OriginalSource -is [System.Windows.Controls.TabControl]) { Update-PSDWizardDebugConsole }
+        })
+        $ctx.VariableFilter.Add_TextChanged({ Update-PSDWizardDebugConsole })
+        $ctx.OnlyChanged.Add_Click({ Update-PSDWizardDebugConsole })
+        $ctx.LogFilter.Add_TextChanged({ Update-PSDWizardDebugConsole })
+        $ctx.LogSource.Add_SelectionChanged({
+            param($sender, $e)
+            Update-PSDWizardDebugConsole
+        })
+
+        # Color the rows that changed or differ
+        $colorRow = {
+            param($sender, $e)
+            $state = [string]$e.Row.Item.State
+            $e.Row.Background = switch ($state) {
+                'differs' { [System.Windows.Media.Brushes]::MistyRose }
+                'changed' { [System.Windows.Media.Brushes]::LightGoldenrodYellow }
+                'new'     { [System.Windows.Media.Brushes]::Honeydew }
+                'removed' { [System.Windows.Media.Brushes]::Lavender }
+                default   { [System.Windows.Media.Brushes]::White }
+            }
+        }
+        $ctx.VariableGrid.Add_LoadingRow($colorRow)
+        $ctx.ListGrid.Add_LoadingRow($colorRow)
+
+        # Console input: Enter runs the command, Up and Down walk through the history
+        $ctx.Input.Add_PreviewKeyDown({
+            param($sender, $e)
+            $console = $script:PSDWizardSyncHash.DebugConsole
+            switch ($e.Key) {
+                'Return' {
+                    $e.Handled = $true
+                    $command = $sender.Text
+                    $sender.Clear()
+                    Invoke-PSDWizardDebugCommand -Command $command
+                }
+                'Up' {
+                    $e.Handled = $true
+                    if ($console.HistoryIndex -gt 0) { $console.HistoryIndex--; $sender.Text = $console.History[$console.HistoryIndex]; $sender.CaretIndex = $sender.Text.Length }
+                }
+                'Down' {
+                    $e.Handled = $true
+                    if ($console.HistoryIndex -lt $console.History.Count - 1) { $console.HistoryIndex++; $sender.Text = $console.History[$console.HistoryIndex]; $sender.CaretIndex = $sender.Text.Length }
+                    else { $console.HistoryIndex = $console.History.Count; $sender.Clear() }
+                }
+            }
+        })
+        $window.FindName('btnRun').Add_Click({
+            $console = $script:PSDWizardSyncHash.DebugConsole
+            $command = $console.Input.Text
+            $console.Input.Clear()
+            Invoke-PSDWizardDebugCommand -Command $command
+            $console.Input.Focus() | Out-Null
+        })
+        $window.FindName('btnClearOutput').Add_Click({ $script:PSDWizardSyncHash.DebugConsole.Output.Clear() })
+        $window.Add_Closed({ $script:PSDWizardSyncHash.DebugConsole = $null })
+
+        $ctx.Output.Text = ("Commands run in the wizard session, so TSEnv: and TSEnvList: show what the wizard sees.`r`n" +
+            "`$SyncHash is the wizard state and `$Window the wizard window. Examples:`r`n" +
+            "  Get-ChildItem tsenv: | Sort-Object Name`r`n  (Get-Item tsenvlist:DomainOUs).Value`r`n  `$SyncHash.TSEnvLists`r`n`r`n")
+
+        $window.Add_ContentRendered({ Update-PSDWizardDebugConsole })
+        $window.Show()
+        Write-PSDWizardLog -Message "Debug console opened" -Component $FunctionName
+    }
+    catch {
+        Write-PSDWizardLog -Message "Unable to open the debug console: $($_.Exception.Message)" -LogLevel 3 -Component $FunctionName
+        $SyncHash.DebugConsole = $null
+    }
+}
+
+Function Initialize-PSDWizardDebugButton {
+    <#
+    .SYNOPSIS
+        Shows the theme's Debug Console button (_wizDebugConsole) when debug is on (PSDDebug=YES, -Debug or development mode).
+    .DESCRIPTION
+        The button is part of each theme's template so it can be styled with the theme; it stays hidden until debug is on.
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [System.Windows.Window]$Window,
+
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash
+    )
+
+    if (-not $SyncHash.DebugMode) {
+        return
+    }
+
+    $FunctionName = $MyInvocation.MyCommand.Name
+    $button = $Window.FindName('_wizDebugConsole')
+    if (-not $button) {
+        Write-PSDWizardLog -Message "Debug is on but theme '$($SyncHash.Theme)' has no _wizDebugConsole button, add it to the theme's template to use the debug console" -LogLevel 2 -Component $FunctionName
+        return
+    }
+
+    $button.Visibility = 'Visible'
+    $button.Add_Click({ Show-PSDWizardDebugConsole })
+    Write-PSDWizardLog -Message "Debug console button shown" -Component $FunctionName
+}
+
+#endregion
 
 Function Show-PSDWizardSplashScreen {
     <#
@@ -4766,6 +6008,9 @@ Function Invoke-PSDWizard {
             $versionLabel.Content = "v$($script:ModuleVersion)"
         }
 
+        # Add the debug console button when debug is on
+        Initialize-PSDWizardDebugButton -Window $window -SyncHash $SyncHash
+
         # Add window drag support if borderless
         if ($window.WindowStyle -eq 'None') {
             $window.Add_MouseLeftButtonDown({
@@ -5443,6 +6688,9 @@ Function Invoke-PSDWizard {
 
         # Show window
         $SyncHash.Result = $null
+
+        # Build the busy spinner thread in the background so the first task sequence selection does not wait for it
+        $SyncHash.BusySpinner = Start-PSDWizardSpinner -NoWait
         $dialogResult = $window.ShowDialog()
 
         Write-PSDWizardLog -Message "Wizard closed. Result: $($SyncHash.Result)" -Component $FunctionName
@@ -5452,6 +6700,9 @@ Function Invoke-PSDWizard {
     catch {
         Write-PSDWizardLog -Message "Error in wizard UI: $($_.Exception.Message)" -LogLevel 3 -Component $FunctionName
         throw
+    }
+    finally {
+        Close-PSDWizardSpinner -SyncHash $SyncHash
     }
 }
 
@@ -5551,6 +6802,15 @@ Function Initialize-PSDWizardData {
                         $control.Password = $value
                         $populatedCount++
                         Write-PSDWizardLog -Message "Set $controlName = ********" -Component $FunctionName
+
+                        # A password supplied by CustomSettings/TSEnv is already confirmed (MDT has no confirm box)
+                        if ($controlName -eq 'TSEnv_DomainAdminPassword') {
+                            $domainConfirmBox = $Window.FindName('_DomainAdminConfirmPassword')
+                            if ($domainConfirmBox) {
+                                $domainConfirmBox.Password = $value
+                                Write-PSDWizardLog -Message "Pre-filled _DomainAdminConfirmPassword from TSEnvSettings" -Component $FunctionName
+                            }
+                        }
                     }
                 }
             }
@@ -6419,8 +7679,8 @@ SelectedItem
 
             # Also scan FindName for controls matching pattern
             foreach ($listKey in $SyncHash.TSEnvLists.Keys) {
-                $controlName = "TSEnvList_$listKey"
-                $control = $Window.FindName($controlName)
+                $control = Get-PSDWizardListControl -Window $Window -SyncHash $SyncHash -ListName $listKey
+                $controlName = if ($control) { $control.Name } else { "TSEnvList_$listKey" }
 
                 if ($control) {
                     $controlType = $control.GetType().Name
@@ -6437,7 +7697,8 @@ SelectedItem
                         Write-PSDWizardLog -Message "Populated $($control.Items.Count) items into $controlType $controlName from TSEnvLists['$listKey']" -Component $FunctionName
 
                         # Add event handler to sync selection with TSEnv_ field
-                        $tsenvFieldName = "TSEnv_$listKey"
+                        # The text field is named after the control, not after the (upper case) list name
+                        $tsenvFieldName = $control.Name -replace '^TSEnvList_', 'TSEnv_'
                         $tsenvField = $Window.FindName($tsenvFieldName)
 
                         if ($controlType -eq 'ComboBox') {
@@ -8384,61 +9645,6 @@ Function Get-PSDWizardApplicationProfileGuids {
         }
     }
 
-    Function Get-PSDWizardNumberedTSEnvLists {
-        <#
-        .SYNOPSIS
-            Collects numbered Task Sequence environment properties into named lists.
-        #>
-        [CmdletBinding()]
-        Param(
-            [Parameter(Mandatory=$false)]
-            [hashtable]$TSEnvSettings
-        )
-
-        $lists = @{}
-        # Return an empty hashtable if no TSEnvSettings are provided
-        if (-not $TSEnvSettings) {
-            return $lists
-        }
-
-        $numberedProperties = @{}
-        # Iterate through each key in the TSEnvSettings hashtable to identify numbered properties
-        foreach ($key in $TSEnvSettings.Keys) {
-            # Match the key against the pattern for numbered properties (e.g., PropertyName001)
-            $match = [regex]::Match([string]$key, '^(?<Name>.+?)(?<Index>\d{3})$')
-            if (-not $match.Success) {
-                continue
-            }
-            # Extract the name and index from the numbered property key
-            $name = $match.Groups['Name'].Value
-            if ($name -in @('Applications', 'MandatoryApplications')) {
-                continue
-            }
-
-            # Initialize the array for this numbered property if it doesn't exist
-            if (-not $numberedProperties.ContainsKey($name)) {
-                $numberedProperties[$name] = @()
-            }
-            # Add the property to the numbered properties collection
-            $numberedProperties[$name] += [PSCustomObject]@{
-                Index = [int]$match.Groups['Index'].Value
-                Value = $TSEnvSettings[$key]
-            }
-        }
-
-        # Convert the numbered properties into lists, sorted by their index and filtered for non-empty values
-        foreach ($name in $numberedProperties.Keys) {
-            $values = @($numberedProperties[$name] | Sort-Object Index | Where-Object {
-                -not [string]::IsNullOrWhiteSpace([string]$_.Value)
-            } | ForEach-Object { $_.Value })
-            # Only add the list to the final output if it contains any values
-            if ($values.Count -gt 0) {
-                $lists[$name] = $values
-            }
-        }
-
-        return $lists
-    }
 
 Function Import-PSDWizardControlData {
     <#
@@ -8581,7 +9787,7 @@ Function Import-PSDWizardControlData {
 Function Show-PSDWizard {
     <#
     .SYNOPSIS
-        Main entry point for PSDWizardNew v3.0.0
+        Main entry point for PSDWizardNew v3.0.1
     .DESCRIPTION
         Initializes and displays the PSD Wizard with runspace-based UI architecture.
         Supports both WinPE and development mode execution.
@@ -8762,11 +9968,8 @@ Function Show-PSDWizard {
                 Write-PSDWizardLog -Message "Loading Control folder data: $ControlPath" -Component $FunctionName
                 $wizardData.ControlData = Import-PSDWizardControlData -ControlPath $ControlPath
 
-                # In development, locale indexes live beside the deployment Control folder.
-                $wizardData.LocalePath = Split-Path -Parent $ControlPath
-                if (Test-Path "$($wizardData.LocalePath)\Scripts") {
-                    $wizardData.LocalePath = Join-Path $wizardData.LocalePath 'Scripts'
-                }
+                # In development, the locale indexes are found beside the wizard's resource folder or the deployment share's Control folder.
+                $wizardData.LocalePath = Resolve-PSDWizardLocalePath -ResourcePath $ResourcePath -ControlPath $ControlPath
             }
             else {
                 Write-PSDWizardLog -Message "No Control folder specified or found - using mock data only" -Component $FunctionName
@@ -8792,12 +9995,18 @@ Function Show-PSDWizard {
                 Write-PSDWizardLog -Message "Control folder not available: $ControlPath" -LogLevel 2 -Component $FunctionName
             }
 
-            $wizardData.LocalePath = $ResourcePath
+            $wizardData.LocalePath = Resolve-PSDWizardLocalePath -ResourcePath $ResourcePath -ControlPath $ControlPath
         }
 
         # Populate shared state once, regardless of where the inputs came from.
         $tsEnvSettings = $wizardData.TSEnvSettings
         $syncHash.TSEnvSettings = $wizardData.TSEnvSettings
+
+        # The debug console is available with PSDDebug=YES (Bootstrap.ini), -Debug or in development mode
+        $syncHash.DebugMode = [bool]($PSBoundParameters['Debug'] -or $DevelopmentMode -or ($Global:PSDDebug -eq $true) -or ([string]$tsEnvSettings['PSDDebug'] -eq 'YES'))
+        if ($syncHash.DebugMode) {
+            Write-PSDWizardLog -Message "Debug mode is on, the debug console is available" -Component $FunctionName
+        }
 
         if ($wizardData.ControlData) {
             $syncHash.ControlPath = $ControlPath
@@ -8819,7 +10028,7 @@ Function Show-PSDWizard {
             Write-PSDWizardLog -Message "Loaded $($syncHash.Locales.Count) locales and $($syncHash.TimeZones.Count) timezones" -Component $FunctionName
         }
         # Load list-valued TSEnv settings into the synchronized hashtable.
-        $syncHash.TSEnvLists = Get-PSDWizardNumberedTSEnvLists -TSEnvSettings $tsEnvSettings
+        $syncHash.TSEnvLists = Get-PSDWizardTSEnvLists -TSEnvSettings $tsEnvSettings
         Write-PSDWizardLog -Message "Loaded $($syncHash.TSEnvLists.Count) list-valued settings from TSEnv" -Component $FunctionName
 
         # Determine the selection profile name from the TSEnv settings.

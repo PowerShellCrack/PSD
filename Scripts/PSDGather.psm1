@@ -81,7 +81,14 @@ Function Get-PSDLocalInfo {
 		}
 		else {
 			$LocalInfo['OSVersion'] = "Other"
-			if (!(Test-Path -Path "$env:WINDIR\Explorer.exe")) {
+			# InstallationType is authoritative; Explorer.exe is also present on Server Core with the App Compatibility FOD
+			$installationType = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name InstallationType -ErrorAction SilentlyContinue).InstallationType
+			if ($installationType) {
+				if ($installationType -eq 'Server Core') {
+					$LocalInfo['IsServerCoreOS'] = "True"
+				}
+			}
+			elseif (!(Test-Path -Path "$env:WINDIR\Explorer.exe")) {
 				$LocalInfo['IsServerCoreOS'] = "True"
 			}
 			if (Test-Path -Path HKLM:\System\CurrentControlSet\Control\ProductOptions) {
@@ -113,11 +120,18 @@ Function Get-PSDLocalInfo {
 		$LocalInfo['IsServer'] = "False"
 		$LocalInfo['IsSFF'] = "False"
 		$LocalInfo['IsTablet'] = "False"
+		# PCSystemType 4/5/7 (Enterprise/SOHO/Performance Server) identifies server hardware in tower chassis (type 7), which otherwise looks like a desktop
+		$isServerSystemType = $false
+		Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue | ForEach-Object {
+			if ($_.PCSystemType -in 4, 5, 7) { $isServerSystemType = $true }
+		}
 		Get-CimInstance -ClassName Win32_SystemEnclosure | ForEach-Object {
 			$LocalInfo['AssetTag'] = "$($_.SMBIOSAssetTag)".Trim()
 			if ($_.ChassisTypes[0] -in "8", "9", "10", "11", "12", "14", "18", "21") { $LocalInfo['IsLaptop'] = "True"; $LocalInfo['Chassis'] = "Laptop"}
 			if ($_.ChassisTypes[0] -in "3", "4", "5", "6", "7", "15", "16") { $LocalInfo['IsDesktop'] = "True"; $LocalInfo['Chassis'] = "Desktop"}
-			if ($_.ChassisTypes[0] -in "23") { $LocalInfo['IsServer'] = "True"; $LocalInfo['Chassis'] = "Server"}
+			if ($_.ChassisTypes[0] -in "23" -or ($isServerSystemType -and $_.ChassisTypes[0] -in "3", "4", "5", "6", "7", "15", "16")) {
+				$LocalInfo['IsServer'] = "True"; $LocalInfo['IsDesktop'] = "False"; $LocalInfo['Chassis'] = "Server"
+			}
 			if ($_.ChassisTypes[0] -in "34", "35", "36") { $LocalInfo['IsSFF'] = "True"; $LocalInfo['Chassis'] = "Small Form Factor"}
 			if ($_.ChassisTypes[0] -in "13", "31", "32", "30") {$LocalInfo['IsTablet'] = "True"; $LocalInfo['Chassis'] = "Tablet"}
 		}

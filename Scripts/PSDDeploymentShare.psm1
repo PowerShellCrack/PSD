@@ -22,6 +22,7 @@
           Version - 0.1.4 - () - More minor cleanup
           Version - 0.1.4 - () - Modified error handling for downloading content from deploymentshare using WebDAV 
           Version - 0.1.5 - (Johan Arwidmark) - Changed Start-BitsTransfer authentication from Ntlm to Negotiate. Credits: @theQ23 on GitHub
+          Version - 0.1.6 - () - Log BITS failures, fall back to WebClient, verify downloaded files and remove incomplete downloads (FriendsOfMDT/PSD#318)
 
           TODO:
 
@@ -191,7 +192,14 @@ function Get-PSDContent {
     # Otherwise, download it, copy it, .
     # Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Otherwise, download it, copy it."
 
-    if (Test-Path $dest) {
+    # A folder without any files is left over from a failed download, so it must not count as already downloaded
+    $alreadyDownloaded = Test-Path $dest
+    if ($alreadyDownloaded -and (Test-Path $dest -PathType Container) -and -not (Get-ChildItem -Path $dest -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): $dest exists but contains no files, downloading $content again" -LogLevel 2
+        $alreadyDownloaded = $false
+    }
+
+    if ($alreadyDownloaded) {
         # Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Access to $dest is OK"
         # Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Already copied $content, not copying again."
     }
@@ -199,6 +207,9 @@ function Get-PSDContent {
         # Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): global:psddsDeployRoot is now $global:psddsDeployRoot"
         # Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Running Get-PSDContentWeb -content $content -destination $dest"
         Get-PSDContentWeb -content $content -destination $dest
+        if (-not (Test-Path $dest)) {
+            Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Content $content was not downloaded, $dest does not exist" -LogLevel 2
+        }
     }
     elseif ($global:psddsDeployRoot -like "\\*") {
         # Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): global:psddsDeployRoot is now $global:psddsDeployRoot"
@@ -227,12 +238,51 @@ function Get-PSDContentUNC {
     $Null = Copy-PSDFolder "$($global:psddsDeployRoot)\$content" $destination
 }
 
+# Internal function for downloading files one at a time using WebClient
+function Save-PSDWebFile {
+    param (
+        [object[]] $files
+    )
+
+    $wc = New-Object System.Net.WebClient
+    $wc.Credentials = $global:psddsCredential
+    foreach ($file in $files) {
+        try {
+            $wc.DownloadFile($file.Source, $file.Destination)
+        }
+        catch {
+            Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Unable to download file $($file.Source): $($_.Exception.Message)" -LogLevel 3
+            Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): $($_.Exception.InnerException)" -LogLevel 3
+        }
+    }
+    $wc.Dispose()
+}
+
+# Internal function that returns the files that are missing or have the wrong size
+function Get-PSDMissingFile {
+    param (
+        [object[]] $files
+    )
+
+    foreach ($file in $files) {
+        if (-not (Test-Path -LiteralPath $file.Destination -PathType Leaf)) {
+            $file
+        }
+        elseif ($file.Size -ge 0 -and (Get-Item -LiteralPath $file.Destination).Length -ne $file.Size) {
+            $file
+        }
+    }
+}
+
 # Internal function for retrieving content from URL (web server/HTTP)
 function Get-PSDContentWeb {
     param (
         [string] $content,
         [string] $destination
     )
+
+    # Remember if there was anything in the destination, so a failed download only removes what it created
+    $destinationHadFiles = (Test-Path $destination) -and [bool](Get-ChildItem -Path $destination -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)
 
     $maxAttempts = 3
     $attempts = 0
@@ -364,11 +414,14 @@ function Get-PSDContentWeb {
         $xml.multistatus.response | ? { $_.href -ine $url } | % {
             $uri = new-object system.uri $_.href
             $dest = $uri.LocalPath.Replace("/", "\").Substring($prefixLen).Trim("\")
+            $length = [int64]-1
+            if (-not [int64]::TryParse([string]$_.propstat.prop.getcontentlength, [ref]$length)) { $length = [int64]-1 }
             $obj = [PSCustomObject]@{
                 href         = $_.href
                 name         = $_.propstat.prop.displayname
                 iscollection = $_.propstat.prop.iscollection
                 destination  = $dest
+                size         = $length
             }
             $results += $obj
         }
@@ -385,36 +438,69 @@ function Get-PSDContentWeb {
             }
         }
 
+        # Create the list of files to download
+        $files = @($results | ? { $_.iscollection -eq "0" } | sort destination | % {
+            [PSCustomObject]@{
+                Source      = [string]$_.href
+                Destination = "$destination\$($_.destination)"
+                Size        = $_.size
+            }
+        })
+
         # If possible, do the transfer using BITS.  Otherwise, download the files one at a time
-        if ($env:SYSTEMDRIVE -eq "X:") {
+        if ($files.Count -eq 0) {
+            Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): No files to download from $fullSource."
+            return
+        }
+        elseif ($env:SYSTEMDRIVE -eq "X:") {
             # In Windows PE, download the files one at a time using WebClient
             Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Downloading files using WebClient."
-            $wc = New-Object System.Net.WebClient
-            $wc.Credentials = $global:psddsCredential
-            $results | ? { $_.iscollection -eq "0" } | sort destination | % {
-                $href = $_.href
-                $fullFile = "$destination\$($_.destination)"
-                try {
-                    $wc.DownloadFile($href, $fullFile)
-                }
-                catch {
-                    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Unable to download file $href."
-                    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): $($_.Exception.InnerException)"
-                }
-            }
+            Save-PSDWebFile -files $files
         }
         else {
-            # Create the list of files to download
-            $sourceUrl = @()
-            $destFile = @()
-            $results | ? { $_.iscollection -eq "0" } | sort destination | % {
-                $sourceUrl += [string]$_.href
-                $fullFile = "$destination\$($_.destination)"
-                $destFile += [string]$fullFile
-            }
             # Do the download using BITS
             Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Downloading files using BITS."
-            $bitsJob = Start-BitsTransfer -Authentication Negotiate -Credential $global:psddsCredential -Source $sourceUrl -Destination $destFile -TransferType Download -DisplayName "PSD Transfer" -Priority High
+            try {
+                $null = Start-BitsTransfer -Authentication Negotiate -Credential $global:psddsCredential -Source ([string[]]@($files | % { $_.Source })) -Destination ([string[]]@($files | % { $_.Destination })) -TransferType Download -DisplayName "PSD Transfer" -Priority High -ErrorAction Stop
+            }
+            catch {
+                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): BITS transfer failed: $($_.Exception.Message)" -LogLevel 3
+                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): $($_.Exception.InnerException)" -LogLevel 3
+
+                # BITS refuses to transfer when Windows reports no connectivity (for example no default gateway)
+                Get-NetConnectionProfile -ErrorAction SilentlyContinue | % {
+                    $level = if ($_.IPv4Connectivity -in 'Internet', 'LocalNetwork') { 1 } else { 2 }
+                    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Network profile $($_.InterfaceAlias): IPv4Connectivity=$($_.IPv4Connectivity), IPv6Connectivity=$($_.IPv6Connectivity)" -LogLevel $level
+                }
+
+                # Remove the failed job so it does not linger in the BITS queue
+                Get-BitsTransfer -ErrorAction SilentlyContinue | ? { $_.DisplayName -eq "PSD Transfer" -and $_.JobState -ne "Transferred" } | Remove-BitsTransfer -ErrorAction SilentlyContinue
+            }
+
+            # BITS can end without an error and without files, fall back to WebClient for anything that is missing
+            $missing = @(Get-PSDMissingFile -files $files)
+            if ($missing.Count -gt 0) {
+                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): $($missing.Count) of $($files.Count) files are missing after the BITS transfer, falling back to WebClient." -LogLevel 2
+                Save-PSDWebFile -files $missing
+            }
+        }
+
+        # Verify the result
+        $missing = @(Get-PSDMissingFile -files $files)
+        if ($missing.Count -eq 0) {
+            Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Verified $($files.Count) downloaded files in $destination."
+        }
+        else {
+            $missing | % {
+                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Missing or incomplete after download: $($_.Destination) (source $($_.Source))" -LogLevel 3
+            }
+            Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Download of $content failed, $($missing.Count) of $($files.Count) files are missing." -LogLevel 3
+
+            # Do not leave a partial cache behind that would be mistaken for completed content
+            if (-not $destinationHadFiles) {
+                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Removing incomplete download $destination" -LogLevel 2
+                Remove-Item -Path $destination -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 }
