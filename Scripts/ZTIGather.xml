@@ -230,6 +230,7 @@
 	<property id="OSDPartitions1VOLUMELETTERVARIABLE" type="string" overwrite="false" description="Variable Name to receive DriveLetter" />
 
 	<!-- Roles -->
+	<property id="OSRoleIndex" type="string" overwrite="false" description="ID of the ServerManager.xml catalog entry for the operating system (set by the Install Roles and Features step); the PSD wizard picks the catalog by operating system when it is not set" />
 	<property id="OSRoles" type="string" overwrite="false" description="Comma-delimited list of role IDs to be installed" />
 	<property id="OSRoleServices" type="string" overwrite="false" description="Comma-delimited list of role service IDs to be installed" />
 	<property id="OSFeatures" type="string" overwrite="false" description="Comma-delimited list of features to be installed" />

@@ -49,6 +49,10 @@
                                 <Trigger Property="IsChecked" Value="false">
                                     <Setter TargetName="CheckMark" Property="Visibility" Value="Collapsed"/>
                                 </Trigger>
+                                <!-- Partly selected (a role with only some of its services): a short bar instead of the square -->
+                                <Trigger Property="IsChecked" Value="{x:Null}">
+                                    <Setter TargetName="CheckMark" Property="Height" Value="3"/>
+                                </Trigger>
 
                                 <Trigger Property="IsEnabled" Value="false">
                                     <Setter TargetName="Border" Property="Background" Value="#343447" />
@@ -77,6 +81,9 @@
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsChecked" Value="false">
                                     <Setter TargetName="CheckMark" Property="Visibility" Value="Collapsed"/>
+                                </Trigger>
+                                <Trigger Property="IsChecked" Value="{x:Null}">
+                                    <Setter TargetName="CheckMark" Property="Height" Value="3"/>
                                 </Trigger>
 
                                 <Trigger Property="IsEnabled" Value="false">

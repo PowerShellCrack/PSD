@@ -1,8 +1,11 @@
 <#
 .SYNOPSIS
-    Installs Roles and Roleservices
+    Installs Roles, Role services and Features
 .DESCRIPTION
-    Installs Roles and Roleservices
+    Installs the roles, role services and features of the task sequence. What the task sequence names itself (OSRoles, OSRoleServices and
+    OSFeatures, as set by its Install Roles and Features step or CustomSettings.ini) and what was selected in the PSD wizard (OptionalOSRoles,
+    OptionalOSRoleServices and OptionalOSFeatures) are installed together, each item once.
+    Windows Server uses the ServerManager module (Add-WindowsFeature), Windows client uses Enable-WindowsOptionalFeature.
 .LINK
     https://github.com/FriendsOfMDT/PSD
 .NOTES
@@ -12,9 +15,11 @@
           Contact: @Mikael_Nystrom , @jarwidmark , @mniehaus , @AndHammarskjold
           Primary: @jarwidmark 
           Created: 2019-05-17
-          Modified: 2022-01-24
+          Modified: 2026-11-27
 
           Version - 0.0.1 - () - Finalized functional version 1.
+          Version - 0.0.2 - () - Install the wizard's Optional* selections together with OSRoles, OSRoleServices and OSFeatures; each item once;
+                                 log items that do not exist on this OS and failed installs instead of ignoring them; look the features up once.
 
           TODO:
 
@@ -26,7 +31,7 @@ param (
 )
 
 # Set scriptversion for logging
-$ScriptVersion = "0.0.1"
+$ScriptVersion = "0.0.2"
 
 # Load core modules
 Import-Module Microsoft.BDD.TaskSequenceModule -Scope Global
@@ -65,122 +70,102 @@ Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Property OptionalOSRoles
 Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Property OptionalOSRoleServices is $($tsenv:OptionalOSRoleServices)"
 Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Property OptionalOSFeatures is $($tsenv:OptionalOSFeatures)"
 
-switch ($TSEnv:IsServerOS)
-{
-    'True' {
-        Import-Module ServerManager
-        if($tsenv:OSRoles -ne "" -or $tsenv:OSRoles -ne $null){
-            $OSRoles = $tsenv:OSRoles.Split(",")
-            foreach($OSRole in $OSRoles){
-                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding OSRole: $OSRole"
-                Show-PSDActionProgress -Message "Adding OSRole: $OSRole"
-                try{
-                    $OSRoleName = Get-WindowsFeature | Where-Object Name -EQ $OSRole
-                    if($OSRoleName.InstallState -ne "Installed"){
-                        $Result = Add-WindowsFeature -Name $OSRoleName.Name
-                        if($Result.RestartNeeded -eq "YES"){
-                            $RestartNeeded = $true
-                        }
-                    }
-                }
-                catch{
-                }
-            }
-        }
-        if($tsenv:OSRoleServices -ne "" -or $tsenv:OSRoleServices -ne $null){
-            $OSRoleServices = $tsenv:OSRoleServices.Split(",")
-            foreach($OSRoleService in $OSRoleServices){
-                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding OSRoleService: $OSRoleService"
-                Show-PSDActionProgress -Message "Adding OSRoleService: $OSRoleService"
-                try{
-                    $OSRoleServiceName = Get-WindowsFeature | Where-Object Name -EQ $OSRoleService
-                    if($OSRoleServiceName.InstallState -ne "Installed"){
-                        $Result = Add-WindowsFeature -Name $OSRoleServiceName.Name
-                        if($Result.RestartNeeded -eq "YES"){
-                            $RestartNeeded = $true
-                        }
-                    }
-                }
-                catch{
-                }
-            }
-        }
-        if($tsenv:OSFeatures -ne "" -or $tsenv:OSFeatures -ne $null){
-            $OSFeatures = $tsenv:OSFeatures.Split(",")
-            foreach($OSFeature in $OSFeatures){
-                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding OSFeature: $OSFeature"
-                Show-PSDActionProgress -Message "Adding OSFeature: $OSFeature"
-                Try{
-                    $OSFeatureName = Get-WindowsFeature | Where-Object Name -EQ $OSFeature
-                    if($OSFeatureName.InstallState -ne "Installed"){
-                        $Result = Add-WindowsFeature -Name $OSFeatureName.Name
-                        if($Result.RestartNeeded -eq "YES"){
-                            $RestartNeeded = $true
-                        }
-                    }
-                }
-                Catch{
-                }
-            }
+# Items from the task sequence and from the wizard are installed together; each item once, in the order roles, role services, features
+function Merge-PSDRoleList {
+    param([string[]]$Value)
+    $list = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in $Value) {
+        foreach ($item in ([string]$entry -split '[,;]')) {
+            $item = $item.Trim()
+            if ($item -and $list -notcontains $item) { $list.Add($item) }
         }
     }
-    Default {
-        if($tsenv:OSRoles -ne "" -or $tsenv:OSRoles -ne $null){
-            $OSRoles = $tsenv:OSRoles.Split(",")
-            foreach($OSRole in $OSRoles){
-                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding OSRole: $OSRole"
-                Show-PSDActionProgress -Message "Adding OSRole: $OSRole"
-                try{
-                    $OSRoleName = Get-WindowsOptionalFeature -Online | Where-Object FeatureName -EQ $OSRole
-                    if($OSRoleName.State -ne "Enabled"){
-                        $Result = Enable-WindowsOptionalFeature -Online -FeatureName $OSRoleName.FeatureName -All -NoRestart
-                        if($Result.RestartNeeded -eq "True"){
-                            $RestartNeeded = $true
-                        }
-                    }
-                }
-                catch{
-                }
-            }
-        }
-        if($tsenv:OSRoleServices -ne "" -or $tsenv:OSRoleServices -ne $null){
-            $OSRoleServices = $tsenv:OSRoleServices.Split(",")
-            foreach($OSRoleService in $OSRoleServices){
-                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding OSRoleService: $OSRoleService"
-                Show-PSDActionProgress -Message "Adding OSRoleService: $OSRoleService"
-                try{
-                    $OSRoleServiceName = Get-WindowsOptionalFeature -Online| Where-Object FeatureName -EQ $OSRoleService
-                    if($OSRoleServiceName.State -ne "Enabled"){
-                        $Result = Enable-WindowsOptionalFeature -Online -FeatureName $OSRoleServiceName.FeatureName -All -NoRestart
-                        if($Result.RestartNeeded -eq "True"){
-                            $RestartNeeded = $true
-                        }
-                    }
-                }
-                catch{
-                }
-            }
-        }
-        if($tsenv:OSFeatures -ne "" -or $tsenv:OSFeatures -ne $null){
-        $OSFeatures = $tsenv:OSFeatures.Split(",")
-            foreach($OSFeature in $OSFeatures){
-                Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding OSFeature: $OSFeature"
-                Show-PSDActionProgress -Message "Adding OSFeature: $OSFeature"
-                Try{
-                    $OSFeatureName = Get-WindowsOptionalFeature -Online | Where-Object FeatureName -EQ $OSFeature
-                    if($OSFeatureName.State -ne "Enabled"){
-                        $Result = Enable-WindowsOptionalFeature -Online -FeatureName $OSFeatureName.FeatureName -All -NoRestart
-                        if($Result.RestartNeeded -eq "True"){
-                            $RestartNeeded = $true
-                        }
-                    }
-                }
-                Catch{
-                }
-            }
-        }
+    return ,$list.ToArray()
+}
+
+$OSRoles = Merge-PSDRoleList $tsenv:OSRoles, $tsenv:OptionalOSRoles
+$OSRoleServices = Merge-PSDRoleList $tsenv:OSRoleServices, $tsenv:OptionalOSRoleServices
+$OSFeatures = Merge-PSDRoleList $tsenv:OSFeatures, $tsenv:OptionalOSFeatures
+
+$Requested = New-Object System.Collections.Generic.List[object]
+$Seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($group in @(@('OSRole', $OSRoles), @('OSRoleService', $OSRoleServices), @('OSFeature', $OSFeatures))) {
+    foreach ($name in $group[1]) {
+        if ($Seen.Add($name)) { $Requested.Add([pscustomobject]@{ Kind = $group[0]; Name = $name }) }
     }
 }
+
+if ($Requested.Count -eq 0) {
+    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): No roles, role services or features were specified, nothing to install"
+    Exit 0
+}
+
+# IsServerOS comes from the gather; ask the OS when it is not set
+$IsServer = $false
+if ($TSEnv:IsServerOS -eq 'True') { $IsServer = $true }
+elseif ([string]::IsNullOrEmpty($TSEnv:IsServerOS)) {
+    $IsServer = ((Get-CimInstance -ClassName Win32_OperatingSystem).ProductType -ne 1)
+    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): IsServerOS is not set, the operating system is a $(if($IsServer){'server'}else{'client'})"
+}
+
+$Installed = 0
+$AlreadyInstalled = 0
+$NotAvailable = 0
+$Failed = 0
+$RestartNeeded = $false
+
+# Look the features up once
+$Available = @{}
+if ($IsServer) {
+    Import-Module ServerManager
+    Get-WindowsFeature | ForEach-Object { $Available[$_.Name] = $_ }
+}
+else {
+    Get-WindowsOptionalFeature -Online | ForEach-Object { $Available[$_.FeatureName] = $_ }
+}
+
+foreach ($Item in $Requested) {
+    $Feature = $Available[$Item.Name]
+    if (-not $Feature) {
+        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): $($Item.Kind) $($Item.Name) is not available on this operating system" -LogLevel 2
+        $NotAvailable++
+        continue
+    }
+
+    $IsInstalled = if ($IsServer) { $Feature.InstallState -eq 'Installed' } else { $Feature.State -eq 'Enabled' }
+    if ($IsInstalled) {
+        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): $($Item.Kind) $($Item.Name) is already installed"
+        $AlreadyInstalled++
+        continue
+    }
+
+    Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Adding $($Item.Kind): $($Item.Name)"
+    Show-PSDActionProgress -Message "Adding $($Item.Kind): $($Item.Name)"
+    try {
+        if ($IsServer) {
+            $Result = Add-WindowsFeature -Name $Feature.Name -ErrorAction Stop
+            $Succeeded = [bool]$Result.Success
+            $NeedsRestart = ($Result.RestartNeeded -eq "YES")
+        }
+        else {
+            $Result = Enable-WindowsOptionalFeature -Online -FeatureName $Feature.FeatureName -All -NoRestart -ErrorAction Stop
+            $Succeeded = $true
+            $NeedsRestart = ($Result.RestartNeeded -eq "True")
+        }
+        if ($Succeeded) { $Installed++ }
+        else {
+            Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): $($Item.Kind) $($Item.Name) was not installed: $($Result.ExitCode)" -LogLevel 3
+            $Failed++
+        }
+        if ($NeedsRestart) { $RestartNeeded = $true }
+    }
+    catch {
+        Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): $($Item.Kind) $($Item.Name) failed: $($_.Exception.Message)" -LogLevel 3
+        $Failed++
+    }
+}
+
+Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Installed $Installed, already installed $AlreadyInstalled, not available $NotAvailable, failed $Failed"
 
 if($RestartNeeded -eq $true){
     Write-PSDLog -Message "$($MyInvocation.MyCommand.Name): Reboot needed"

@@ -4,13 +4,16 @@
 
 ### Fixed
 
+- Upgrades now overwrite `PSDWizardNew.psm1` explicitly, so the wizard module is current after upgrading and regenerating boot media.
+- Application page **Select All** and **Select None** now update visible selections and exported `Applications###` values, while retaining mandatory applications.
+- Local `AdminPassword` values supplied by CustomSettings or TSEnv are now mirrored into the local administrator confirmation box, matching existing domain-password behavior.
 - Org Unit, Intune Group and Device Role dropdowns were empty in WinPE. The task sequence environment returns property names in upper case (`DOMAINOUS001`) and `FindName` is case sensitive, so the `TSEnvList_*` controls were never found. Controls are now found ignoring case, on first display and after every Task Sequence selection.
 - Settings of one Task Sequence carried over to the next. Properties applied before the wizard opened (for example by a `DefaultGateway` rule that maps to a Task Sequence section) were never cleared, so mandatory applications, lists and skip properties stayed behind (for example Windows 11 mandatory apps on a server). The settings of every Task Sequence section are now cleared when the selection changes, and only the cleared values the selected section does not set are restored from `[Default]` (processed by PSDGather, so first value wins and lists are not added twice).
 - Reprocessing a Task Sequence silently did nothing when PSDGather was imported into the caller's scope, while the old lists were still cleared. The rules are now run through the loaded PSDGather module, and nothing is cleared when they cannot be run.
 - Domain join password confirmation is prefilled when `DomainAdminPassword` comes from the task sequence environment, so the wizard no longer asks to confirm a password that CustomSettings already supplied.
 - Org Unit page no longer fails when a theme has no Org Unit dropdown, and a missing list is no longer counted as one empty value.
 - Dark theme: a selected Task Sequence was blue on blue. The tree text is now light (folders blue) and the selected item is white on a dark blue highlight.
-- Dark theme: the Roles and Features list showed blank rows. The check boxes kept their data in `Tag`, which the Dark check box style uses as its high contrast flag, so they had no template and drew nothing; the data moved to `DataContext`, and the list uses the plain row style of the Applications list.
+- Dark theme: the Roles and Features list showed blank rows. The check boxes kept their data in `Tag`, which the Dark check box style uses as its high contrast flag, so they had no template and drew nothing; the data moved to `DataContext`. The Dark check box now also shows a partly selected state (a short bar).
 - The language and time zone dropdowns only showed the built-in sample lists (10 languages, 12 time zones) in WinPE. `PSDListOfLanguages.xml` and `PSDListOfTimeZoneIndex.xml` are in the deployment share's `Scripts` folder, but the wizard looked in `Scripts\PSDWizardNew`. The folder is now found from the resource folder, its parent, `ScriptRoot` or the share's `Scripts` folder, and a missing index is logged as a warning.
 
 ### Added
@@ -24,15 +27,26 @@
   The tabs refresh after every Task Sequence selection, and a snapshot of everything can be saved next to the PSD logs.
 - Busy overlay with a spinning ring while a Task Sequence selection is processed. The ring is drawn by a small window on its own thread so it keeps turning while the wizard is busy; the overlay falls back to a static ring if that window cannot start.
 - Keep the last wizard log entries in memory for the debug console.
+- Roles and Features page rebuilt on the native MDT `ServerManager.xml` (the format the Deployment Workbench and `ZTIOSRole.wsf` use), replacing the separate `Windows11Roles.xml` (removed):
+  - The page is a tree of check boxes (`_rolesFeatureTree`, Classic and Dark). Selecting a role selects everything below it, and any of those can then be cleared; a role with only some of its services shows as partly selected. A role is only written to the selection when all of it is checked: a role service brings the role it needs, and a role on its own would bring its default services back.
+  - `Get-PSDWizardRoleContext` works out what the Task Sequence installs, because Windows 11 and Windows Server share build numbers. It reads the operating system in `OperatingSystems.xml`: `Flags` (`Server*`), the name and image name for server or client, the image name for Server Core (`CORE`, `Desktop Experience`, or plain official Server 2016+ media names, which are Core) and `Build` for the version. The Task Sequence template (`PSDServer.xml` or `PSDClient.xml`) is used when the operating system is not in `OperatingSystems.xml`. An `OSRoleIndex` (TSEnv or the Task Sequence's Install Roles and Features step) picks the catalog directly, as in MDT.
+  - `Select-PSDWizardRoleCatalog` picks the `<Roles>` entry by `Server`, `Core` and the new `MinBuild` / `MaxBuild` attributes. A build newer than every entry (Windows 11 26H2, Windows Server 2028) uses the newest catalog of its kind.
+  - What the Task Sequence installs anyway (`OSRoles`, `OSRoleServices`, `OSFeatures`, or its Install Roles and Features step) shows checked and locked.
+  - Earlier selections the catalog does not have (for instance from another Task Sequence's operating system) are dropped when the page is loaded.
 
 ### Changed
 
+- `ServerManager.xml` keeps only the supported operating systems: Windows 11 (24H2, 25H2, 26H2 and LTSC, one entry because the features are the same; `MinBuild` 26100, so earlier releases such as 22H2 and 23H2 get no role list), Windows Server 2019, 2022 and 2025, each with a Core entry. IDs are now unique (16 to 22; the stock file used 15 three times). Other releases are added as new `<Roles>` entries with their own `MinBuild`.
+- The Roles and Features pane has a `TreeView` named `_rolesFeatureTree` instead of the `ListBox` `_rolesFeatureList`; a custom theme needs the same change (the wizard logs a warning when it still finds the list).
 - Lists for the dropdowns come from one function, `Get-PSDWizardTSEnvLists`, built from the numbered properties (`DomainOUs001`, ...) in the `TSEnv:` snapshot. `TSEnvList:` is a view over those numbered variables, so this gives the same lists in WinPE and in development mode. The helper that was nested inside `Show-PSDWizard` was removed.
 - Clearing a Task Sequence's properties is done once per list instead of once per numbered property, so a selection is processed faster.
 
 ### Related changes in other PSD scripts
 
-- `ZTIGather.xml`: declared `SkipDeviceRole`, which the Device Role page uses but PSDGather ignored from CustomSettings.ini.
+- `PSDRoleInstall.ps1` (0.0.2): installs the wizard's `OptionalOSRoles`, `OptionalOSRoleServices` and `OptionalOSFeatures` together with `OSRoles`, `OSRoleServices` and `OSFeatures` (it only read the second group before, so wizard selections were never installed), each item once. Items that do not exist on the operating system and failed installs are logged instead of ignored, and the features are looked up once instead of once per item.
+- `PSDClient.xml` and `PSDServer.xml`: new Task Sequences get an Install Roles and Features step (run by `PSDRoleInstall.ps1`) after Tattoo. Existing Task Sequences need the step added for the wizard's selections to be installed.
+- `LiteTouchPE.xml`: no longer copies `ServerManager.xml` into the boot image. The wizard reads it from the deployment share's `Scripts` folder with the other wizard files, so a catalog change does not need a new boot image.
+- `ZTIGather.xml`: declared `OSRoleIndex` and `SkipDeviceRole`. `SkipDeviceRole` is used by the Device Role page but PSDGather ignored it from CustomSettings.ini.
 - `PSDStartLoader.psm1`: the PowerShell button opens a window with the task sequence modules loaded, so the `TSEnv:` and `TSEnvList:` drives exist.
 - `PSDGather.psm1` (issue 319): `IsServerCoreOS` uses the `InstallationType` registry value instead of the missing `Explorer.exe`, and server hardware in a tower chassis (`PCSystemType` 4, 5 or 7) is detected as a server.
 - `PSDDeploymentShare.psm1` and `PSDApplications.ps1` (issue 318): BITS failures are logged and fall back to WebClient, downloads are verified and incomplete downloads removed, and application content and installer start-up errors are logged.

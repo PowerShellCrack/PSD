@@ -193,6 +193,15 @@
       </defaultVarList>
       <action>PowerShell.exe -file %SCRIPTROOT%\PSDTattoo.ps1</action>
     </step>
+    <step type="BDD_InstallRoles" name="Install Roles and Features" description="" disable="false" continueOnError="false" successCodeList="0 3010" runIn="WinPEandFullOS">
+      <defaultVarList>
+        <variable name="OSRoleIndex" property="OSRoleIndex"></variable>
+        <variable name="OSRoles" property="OSRoles"></variable>
+        <variable name="OSRoleServices" property="OSRoleServices"></variable>
+        <variable name="OSFeatures" property="OSFeatures"></variable>
+      </defaultVarList>
+      <action>cscript.exe "%SCRIPTROOT%\ZTIOSRole.wsf"</action>
+    </step>
     <step name="Windows Update Pass 1" disable="true" continueOnError="true" successCodeList="0 3010" description="" startIn="">
       <action>powershell.exe -file %SCRIPTROOT%\PSDWindowsUpdate.ps1</action>
       <defaultVarList>

@@ -68,7 +68,7 @@
 		<Condition><![CDATA[UCase(Property("SkipRoleSelection")) == "NO"]]></Condition>
 		<MainTitle><![CDATA[ "Select Roles and Features" ]]></MainTitle>
 		<SubTitle><![CDATA[ "Choose optional Windows features for this deployment" ]]></SubTitle>
-		<Help><![CDATA[ "Select the Windows features to include. The available list is based on the selected operating system." ]]></Help>
+		<Help><![CDATA[ "Select the roles and features to install. The list is based on the selected operating system.&#xa;&#xa;Selecting a role selects what is below it; clear the ones you do not want. Items the task sequence already installs are checked and locked." ]]></Help>
 	</Pane>
 
 	<Pane id="IntuneGroup" title="Intune Group">

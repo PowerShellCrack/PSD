@@ -2339,14 +2339,436 @@ Function Update-PSDWizardDependentControlSelections {
     Write-PSDWizardLog -Message "Dependent-control synchronization complete: lists=$listMatches, locales=$localeMatches, timezones=$timeZoneMatches, disk=$diskMatched" -Component $FunctionName
 }
 
+Function Get-PSDWizardTSRoleStep {
+    <#
+    .SYNOPSIS
+        Reads the Install Roles and Features step of a task sequence.
+    .DESCRIPTION
+        Task sequences that carry their own Install Roles and Features step (BDD_InstallRoles) keep the catalog ID and the lists in the
+        step's variables. The wizard reads them so it can use the same catalog and show those items as already selected.
+    .PARAMETER TaskSequenceID
+        The Task Sequence ID
+    .PARAMETER ControlPath
+        The control folder path
+    .OUTPUTS
+        [pscustomobject] with OSRoleIndex, OSRoles, OSRoleServices and OSFeatures (empty when the task sequence has no enabled step)
+    .EXAMPLE
+        $step = Get-PSDWizardTSRoleStep -TaskSequenceID 'SVR22STD_PSD' -ControlPath 'E:\PSD-Forked\Control'
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [string]$TaskSequenceID,
+
+        [Parameter(Mandatory=$true)]
+        [string]$ControlPath
+    )
+
+    $FunctionName = $MyInvocation.MyCommand.Name
+    $result = [pscustomobject]@{ OSRoleIndex = ''; OSRoles = @(); OSRoleServices = @(); OSFeatures = @() }
+    $tsXmlPath = Join-Path $ControlPath "$TaskSequenceID\TS.xml"
+    if (-not (Test-Path -LiteralPath $tsXmlPath)) { return $result }
+
+    try {
+        [xml]$tsXml = Get-Content -LiteralPath $tsXmlPath -Encoding UTF8
+        $steps = @($tsXml.SelectNodes('//step[@type="BDD_InstallRoles"]') | Where-Object { $_.GetAttribute('disable') -ne 'true' })
+        foreach ($step in $steps) {
+            foreach ($variable in @($step.SelectNodes('./defaultVarList/variable'))) {
+                $name = $variable.GetAttribute('name')
+                $value = [string]$variable.InnerText
+                if ($name -eq 'OSRoleIndex') {
+                    if (-not $result.OSRoleIndex -and $value.Trim()) { $result.OSRoleIndex = $value.Trim() }
+                }
+                elseif ($name -in 'OSRoles', 'OSRoleServices', 'OSFeatures') {
+                    $result.$name = @($result.$name) + @($value -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                }
+            }
+        }
+        if ($steps.Count -gt 0) {
+            Write-PSDWizardLog -Message "Task sequence '$TaskSequenceID' has $($steps.Count) Install Roles and Features step(s): OSRoleIndex='$($result.OSRoleIndex)', roles=$(@($result.OSRoles).Count), role services=$(@($result.OSRoleServices).Count), features=$(@($result.OSFeatures).Count)" -Component $FunctionName
+        }
+    }
+    catch {
+        Write-PSDWizardLog -Message "Unable to read the Install Roles and Features step of '$TaskSequenceID': $($_.Exception.Message)" -LogLevel 2 -Component $FunctionName
+    }
+    return $result
+}
+
+Function Get-PSDWizardRoleContext {
+    <#
+    .SYNOPSIS
+        Works out what kind of operating system a task sequence installs, to pick its role and feature catalog.
+    .DESCRIPTION
+        Windows 11 and Windows Server share build numbers, so the build alone cannot tell the catalogs apart. This looks at, in order:
+          1. OSRoleIndex (TSEnv or the task sequence's Install Roles and Features step): the catalog ID to use as is.
+          2. The operating system the task sequence installs (OperatingSystems.xml): Flags (Server*), name and image name for server or
+             client, the image name for Server Core, and the Build for the version.
+          3. The task sequence template (PSDServer.xml or PSDClient.xml) when the operating system is not in OperatingSystems.xml.
+    .PARAMETER SyncHash
+        The wizard hashtable with TaskSequences, OperatingSystems, ControlPath and TSEnvSettings.
+    .PARAMETER TaskSequenceID
+        The selected Task Sequence ID.
+    .OUTPUTS
+        [pscustomobject] with IsServer ($null when it cannot be told), IsCore, Build (0 when unknown), OSRoleIndex, OperatingSystem, Reason and TaskSequenceStep
+    .EXAMPLE
+        $context = Get-PSDWizardRoleContext -SyncHash $syncHash -TaskSequenceID 'SVR22STD_PSD'
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [hashtable]$SyncHash,
+
+        [Parameter(Mandatory=$true)]
+        [string]$TaskSequenceID
+    )
+
+    $FunctionName = $MyInvocation.MyCommand.Name
+    $reasons = New-Object System.Collections.Generic.List[string]
+    $step = Get-PSDWizardTSRoleStep -TaskSequenceID $TaskSequenceID -ControlPath $SyncHash.ControlPath
+
+    # The operating system of the task sequence; hidden operating systems are not in the wizard list, so read the file for those
+    $osGuid = Get-PSDWizardTSOSGUID -TaskSequenceID $TaskSequenceID -ControlPath $SyncHash.ControlPath
+    $os = $null
+    if ($osGuid) {
+        $os = @($SyncHash.OperatingSystems | Where-Object { ([string]$_.guid).Trim('{}') -eq ([string]$osGuid).Trim('{}') }) | Select-Object -First 1
+        $osXml = Join-Path $SyncHash.ControlPath 'OperatingSystems.xml'
+        if (-not $os -and (Test-Path -LiteralPath $osXml)) {
+            [xml]$osDoc = Get-Content -LiteralPath $osXml -Encoding UTF8
+            $os = @($osDoc.oss.os | Where-Object { ([string]$_.guid).Trim('{}') -eq ([string]$osGuid).Trim('{}') }) | Select-Object -First 1
+        }
+    }
+    $ts = @($SyncHash.TaskSequences | Where-Object { $_.ID -eq $TaskSequenceID }) | Select-Object -First 1
+    $template = [string]$ts.TaskSequenceTemplate
+
+    $osText = if ($os) { @([string]$os.Name, [string]$os.Description, [string]$os.ImageName) -join ' ' } else { '' }
+    $flags = if ($os) { [string]$os.Flags } else { '' }
+
+    # Build: the third part of 10.0.20348.3091, else the version in the name
+    $build = 0
+    if ($os -and ([string]$os.Build) -match '^\d+\.\d+\.(\d+)') { $build = [int]$Matches[1] }
+    if ($build -le 0 -and $osText) {
+        $build = switch -Regex ($osText) {
+            'Server\s*2025' { 26100; break }
+            'Server\s*2022' { 20348; break }
+            'Server\s*2019' { 17763; break }
+            'Windows\s*11'  { 22000; break }
+            default { 0 }
+        }
+        if ($build -gt 0) { $reasons.Add("build $build taken from the operating system name") }
+    }
+    elseif ($build -gt 0) { $reasons.Add("build $build from OperatingSystems.xml") }
+
+    # Server or client: the operating system's flags and name first, the task sequence template when there is no operating system
+    $isServer = $null
+    if ($os) {
+        if ($flags -match '^Server' -or $osText -match 'Windows\s+Server') { $isServer = $true; $reasons.Add("operating system '$($os.Name)' is a server (flags '$flags')") }
+        elseif ($flags -or $osText -match 'Windows\s*(\d|Vista|XP)') { $isServer = $false; $reasons.Add("operating system '$($os.Name)' is a client (flags '$flags')") }
+    }
+    if ($template) {
+        $templateServer = if ($template -match 'Server') { $true } elseif ($template -match 'Client') { $false } else { $null }
+        if ($null -eq $isServer -and $null -ne $templateServer) { $isServer = $templateServer; $reasons.Add("task sequence template '$template'") }
+        elseif ($null -ne $templateServer -and $templateServer -ne $isServer) {
+            Write-PSDWizardLog -Message "Task sequence template '$template' and operating system '$($os.Name)' disagree on server or client; using the operating system" -LogLevel 2 -Component $FunctionName
+        }
+    }
+
+    # Server Core: raw image names say CORE. Official media since Server 2016 name the Core image plainly ("Windows Server 2022 Standard") and label
+    # the other "(Desktop Experience)". Any other name, such as a custom image, is taken to have the desktop experience.
+    $isCore = $false
+    if ($isServer -and $os) {
+        $imageText = @([string]$os.ImageName, [string]$os.Name, [string]$os.Description) -join ' '
+        if ($imageText -match 'Desktop Experience') { $isCore = $false }
+        elseif ($imageText -match 'CORE') { $isCore = $true }
+        elseif (([string]$os.ImageName) -cmatch 'SERVER(STANDARD|DATACENTER|ENTERPRISE|WEB|SOLUTION)\b') { $isCore = $false }
+        elseif ($build -ge 14393 -and ([string]$os.ImageName).Trim() -match '^Windows Server \d{4}( R2)? (Standard|Datacenter)( Evaluation)?$') { $isCore = $true }
+        $reasons.Add($(if ($isCore) { 'image is Server Core' } else { 'image has the desktop experience' }))
+    }
+
+    # OSRoleIndex wins when it is set: the same value the Deployment Workbench writes into the step
+    $roleIndex = [string]$SyncHash.TSEnvSettings['OSRoleIndex']
+    if ([string]::IsNullOrWhiteSpace($roleIndex)) { $roleIndex = [string]$step.OSRoleIndex }
+    if (-not [string]::IsNullOrWhiteSpace($roleIndex)) { $reasons.Insert(0, "OSRoleIndex $roleIndex is set") }
+
+    [pscustomobject]@{
+        TaskSequenceID   = $TaskSequenceID
+        OperatingSystem  = if ($os) { [string]$os.Name } else { '' }
+        Build            = $build
+        IsServer         = $isServer
+        IsCore           = $isCore
+        OSRoleIndex      = $roleIndex.Trim()
+        Reason           = $reasons -join '; '
+        TaskSequenceStep = $step
+    }
+}
+
+Function Select-PSDWizardRoleCatalog {
+    <#
+    .SYNOPSIS
+        Picks the <Roles> entry of ServerManager.xml that matches an operating system.
+    .DESCRIPTION
+        The file is the native MDT ServerManager.xml. Every <Roles> element is one operating system; PSD adds MinBuild and MaxBuild to them.
+        With an OSRoleIndex the entry with that ID is used (as ZTIOSRole.wsf does). Without one the entries are filtered by Server and Core,
+        and the one with the highest MinBuild at or below the build wins, so a build newer than every entry (a new Windows 11 or Windows Server
+        release) uses the newest catalog until a newer entry is added. Entries without MinBuild are only used through an OSRoleIndex.
+    .PARAMETER Catalog
+        The loaded ServerManager.xml
+    .PARAMETER Context
+        The result of Get-PSDWizardRoleContext
+    .OUTPUTS
+        [pscustomobject] with Node and Reason, or $null when nothing matches
+    .EXAMPLE
+        $selection = Select-PSDWizardRoleCatalog -Catalog $catalog -Context $context
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [xml]$Catalog,
+
+        [Parameter(Mandatory=$true)]
+        $Context
+    )
+
+    $roleIndex = 0
+    if ($Context.OSRoleIndex) {
+        if ([int]::TryParse($Context.OSRoleIndex, [ref]$roleIndex)) {
+            $node = $Catalog.SelectSingleNode("/OSRoles/Roles[@ID='$roleIndex']")
+            if ($node) { return [pscustomobject]@{ Node = $node; Reason = "OSRoleIndex $roleIndex" } }
+        }
+        Write-PSDWizardLog -Message "OSRoleIndex '$($Context.OSRoleIndex)' is not in the role catalog; choosing by operating system" -LogLevel 2 -Component 'Select-PSDWizardRoleCatalog'
+    }
+    if ($null -eq $Context.IsServer) { return $null }
+
+    $build = if ($Context.Build -gt 0) { [int]$Context.Build } else { [int]::MaxValue }
+    $server = if ($Context.IsServer) { 'yes' } else { 'no' }
+    $candidates = @($Catalog.OSRoles.Roles | Where-Object { $_.Server -eq $server -and $_.MinBuild })
+    $coreChoices = @(if ($Context.IsServer -and $Context.IsCore) { 'yes' }; 'no')
+
+    foreach ($core in $coreChoices) {
+        $sameKind = @($candidates | Where-Object { $_.Core -eq $core })
+        $match = @($sameKind | Where-Object { [int]$_.MinBuild -le $build -and (-not $_.MaxBuild -or $build -le [int]$_.MaxBuild) } | Sort-Object { [int]$_.MinBuild } -Descending) | Select-Object -First 1
+        $how = "build $($Context.Build) is in MinBuild $($match.MinBuild) - MaxBuild $($match.MaxBuild)"
+        if (-not $match) {
+            $match = @($sameKind | Where-Object { [int]$_.MinBuild -le $build } | Sort-Object { [int]$_.MinBuild } -Descending) | Select-Object -First 1
+            $how = "build $($Context.Build) is newer than the catalogs, using the newest (MinBuild $($match.MinBuild))"
+        }
+        if ($match) {
+            if ($Context.IsCore -and $core -eq 'no') { $how += '; no Server Core catalog, using the desktop experience one' }
+            return [pscustomobject]@{ Node = $match; Reason = $how }
+        }
+    }
+    return $null
+}
+
+Function Get-PSDWizardRoleDescendant {
+    <#
+    .SYNOPSIS
+        Returns every entry below a role tree entry.
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        $Entry
+    )
+    foreach ($child in $Entry.Children) {
+        $child
+        Get-PSDWizardRoleDescendant -Entry $child
+    }
+}
+
+Function Update-PSDWizardRoleEntryState {
+    <#
+    .SYNOPSIS
+        Sets a role tree entry's check box from its children: checked when all are, unchecked when none are, otherwise indeterminate.
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        $Entry
+    )
+    if ($Entry.Children.Count -eq 0) { return }
+    # An item the task sequence already installs stays checked whatever its children are
+    if ($Entry.Locked) { $Entry.CheckBox.IsChecked = $true; return }
+    $checked = @($Entry.Children | Where-Object { $_.CheckBox.IsChecked -eq $true }).Count
+    $unchecked = @($Entry.Children | Where-Object { $_.CheckBox.IsChecked -eq $false }).Count
+    $Entry.CheckBox.IsChecked = if ($checked -eq $Entry.Children.Count) { $true } elseif ($unchecked -eq $Entry.Children.Count) { $false } else { $null }
+}
+
+Function Write-PSDWizardRoleSelection {
+    <#
+    .SYNOPSIS
+        Writes the checked roles, role services and features to OptionalOSRoles, OptionalOSRoleServices and OptionalOSFeatures.
+    .DESCRIPTION
+        Every checked item is written, so a role that was selected with all of its role services lists them all and unchecking one of them
+        leaves it out. A partly checked role is not written itself: installing a role service brings the role it needs, and the role on its
+        own would bring its default role services back. Items the task sequence already installs (locked) are left to the task sequence.
+    .PARAMETER State
+        The role tree state ($script:PSDWizardRoleState)
+    .EXAMPLE
+        Write-PSDWizardRoleSelection -State $script:PSDWizardRoleState
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [hashtable]$State
+    )
+
+    $FunctionName = $MyInvocation.MyCommand.Name
+    foreach ($type in @($State.TypeToProperty.Keys)) {
+        $propertyName = $State.TypeToProperty[$type]
+        $values = @($State.Entries | Where-Object { $_.Type -eq $type -and -not $_.Locked -and $_.CheckBox.IsChecked -eq $true } | ForEach-Object { $_.Id })
+        $text = $values -join ','
+        if ([string]$State.SyncHash.TSEnvSettings[$propertyName] -ceq $text) { continue }
+
+        $targetField = $State.Window.FindName("TSEnv_$propertyName")
+        if ($targetField) { $targetField.Text = $text }
+        if ($State.SyncHash.TSEnvSettings) { $State.SyncHash.TSEnvSettings[$propertyName] = $text }
+        try {
+            Set-PSDWizardTSEnvProperty -Name $propertyName -Value $text | Out-Null
+        }
+        catch {
+            Write-PSDWizardLog -Message "Unable to write $propertyName from role selection: $($_.Exception.Message)" -LogLevel 2 -Component $FunctionName
+        }
+        Write-PSDWizardLog -Message "Updated $propertyName from the role catalog selection: $text" -Component $FunctionName
+    }
+}
+
+Function Invoke-PSDWizardRoleClick {
+    <#
+    .SYNOPSIS
+        Handles a click on a role tree check box.
+    .DESCRIPTION
+        A role (an item with children below it) selects or clears everything below it: all of it when anything below is unchecked,
+        none when all of it is checked. A child changes its parents' state, so a role is checked when all its children are, indeterminate
+        when some are. Items the task sequence already installs cannot be changed.
+    .PARAMETER Entry
+        The role tree entry of the clicked check box
+    .EXAMPLE
+        Invoke-PSDWizardRoleClick -Entry $checkBox.DataContext
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        $Entry
+    )
+
+    $state = $script:PSDWizardRoleState
+    if (-not $state) { return }
+
+    if ($Entry.Children.Count -gt 0) {
+        $below = @(Get-PSDWizardRoleDescendant -Entry $Entry | Where-Object { -not $_.Locked })
+        $select = @($below | Where-Object { $_.CheckBox.IsChecked -ne $true }).Count -gt 0
+        foreach ($item in $below) { $item.CheckBox.IsChecked = $select }
+        Update-PSDWizardRoleEntryState -Entry $Entry
+    }
+    $parent = $Entry.Parent
+    while ($parent) {
+        Update-PSDWizardRoleEntryState -Entry $parent
+        $parent = $parent.Parent
+    }
+    Write-PSDWizardRoleSelection -State $state
+}
+
+Function Add-PSDWizardRoleTreeNode {
+    <#
+    .SYNOPSIS
+        Adds the children of a catalog node to the role tree.
+    .DESCRIPTION
+        Elements with an Id become check boxes (Role, RoleService and Feature). Elements without an Id are group headings such as "Roles" and
+        "Feature" and only show their children. The entries are kept in the state so selections can be cascaded and written.
+    .PARAMETER Items
+        The ItemCollection of the tree or tree item to add to
+    .PARAMETER Node
+        The catalog node whose children are added
+    .PARAMETER ParentEntry
+        The entry of the closest parent with an Id, or $null
+    .PARAMETER State
+        The role tree state
+    .PARAMETER Selected
+        Ids that start checked (earlier selections)
+    .PARAMETER Locked
+        Ids the task sequence already installs; checked and not changeable
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        $Items,
+
+        [Parameter(Mandatory=$true)]
+        [System.Xml.XmlNode]$Node,
+
+        $ParentEntry,
+
+        [Parameter(Mandatory=$true)]
+        [hashtable]$State,
+
+        [hashtable]$Selected = @{},
+
+        [hashtable]$Locked = @{}
+    )
+
+    foreach ($child in $Node.ChildNodes) {
+        if ($child.NodeType -ne [System.Xml.XmlNodeType]::Element) { continue }
+        $id = ([string]$child.GetAttribute('Id')).Trim()
+        $displayName = [string]$child.GetAttribute('DisplayName')
+        $item = [System.Windows.Controls.TreeViewItem]::new()
+
+        if (-not $id) {
+            # A heading: its text is the header, the top ones start open
+            $item.Header = $displayName
+            $item.IsExpanded = ($null -eq $ParentEntry)
+            [void]$Items.Add($item)
+            Add-PSDWizardRoleTreeNode -Items $item.Items -Node $child -ParentEntry $ParentEntry -State $State -Selected $Selected -Locked $Locked
+            continue
+        }
+
+        $isLocked = $Locked.ContainsKey($id)
+        $checkBox = [System.Windows.Controls.CheckBox]::new()
+        $checkBox.Content = $displayName
+        $checkBox.ToolTip = if ($isLocked) { "$id (installed by the task sequence)" } else { "$id ($($child.LocalName))" }
+        $checkBox.IsChecked = $isLocked -or $Selected.ContainsKey($id)
+        $checkBox.IsEnabled = -not $isLocked
+        $checkBox.Margin = [System.Windows.Thickness]::new(0, 1, 4, 1)
+
+        $entry = [pscustomobject]@{
+            Id       = $id
+            Type     = [string]$child.LocalName
+            CheckBox = $checkBox
+            Item     = $item
+            Parent   = $ParentEntry
+            Children = New-Object System.Collections.ArrayList
+            Locked   = $isLocked
+        }
+        # The data stays in DataContext: the Dark theme's check box and tree item styles use Tag and the header template for their own purposes
+        $checkBox.DataContext = $entry
+        $checkBox.Add_Click({ param($sender, $eventArgs) Invoke-PSDWizardRoleClick -Entry $sender.DataContext })
+
+        # The Dark theme's tree item header template renders the header as text; a null one shows the check box itself
+        $item.HeaderTemplate = $null
+        $item.Header = $checkBox
+        $item.IsExpanded = $false
+        [void]$Items.Add($item)
+        [void]$State.Entries.Add($entry)
+        if ($ParentEntry) { [void]$ParentEntry.Children.Add($entry) }
+
+        Add-PSDWizardRoleTreeNode -Items $item.Items -Node $child -ParentEntry $entry -State $State -Selected $Selected -Locked $Locked
+        if ($entry.Children.Count -gt 0) { $checkBox.IsThreeState = $true }
+    }
+}
+
 Function Initialize-PSDWizardRoleFeatureList {
     <#
     .SYNOPSIS
-        Loads the role and feature catalog for the selected operating system.
+        Loads the role and feature catalog for the selected operating system into the Roles and Features tree.
     .DESCRIPTION
-        This function loads the role and feature catalog for the selected operating system into the specified window control.
+        Finds the catalog (the native MDT ServerManager.xml) entry for the operating system the selected task sequence installs, and shows it
+        as a tree of check boxes. Selecting a role selects what is below it, which can then be cleared one by one. The checked items are
+        written to OptionalOSRoles, OptionalOSRoleServices and OptionalOSFeatures for PSDRoleInstall.ps1; items the task sequence already
+        installs (OSRoles, OSRoleServices and OSFeatures, or its Install Roles and Features step) show checked and cannot be cleared.
     .PARAMETER Window
-        The window object that contains the role and feature list control.
+        The window object that contains the role and feature tree control (_rolesFeatureTree).
     .PARAMETER SyncHash
         The hashtable containing the task sequence environment settings and other relevant data.
     .EXAMPLE
@@ -2364,13 +2786,17 @@ Function Initialize-PSDWizardRoleFeatureList {
 
     $FunctionName = $MyInvocation.MyCommand.Name
     Write-PSDWizardLog -Message "Starting role/feature initialization. ResourcePath='$($SyncHash.ResourcePath)', ControlPath='$($SyncHash.ControlPath)'" -Component $FunctionName
-    $featureList = $Window.FindName('_rolesFeatureList')
-    if (-not $featureList) {
+    $script:PSDWizardRoleState = $null
+    $tree = $Window.FindName('_rolesFeatureTree')
+    if (-not $tree) {
+        if ($Window.FindName('_rolesFeatureList')) {
+            Write-PSDWizardLog -Message "The theme's Roles and Features pane still has the flat _rolesFeatureList; it needs a TreeView named _rolesFeatureTree" -LogLevel 2 -Component $FunctionName
+        }
         return
     }
 
-    $featureList.Items.Clear()
-    # Clear the role and feature list before loading new items.
+    $tree.Items.Clear()
+    # Clear the role and feature tree before loading new items.
     $status = $Window.FindName('_rolesCatalogStatus')
     if (-not ($SyncHash.TSEnvSettings -and $SyncHash.TSEnvSettings['SkipRoleSelection'] -ieq 'NO')) {
         Write-PSDWizardLog -Message "Role selection skipped: SkipRoleSelection='$($SyncHash.TSEnvSettings['SkipRoleSelection'])'" -Component $FunctionName
@@ -2386,111 +2812,80 @@ Function Initialize-PSDWizardRoleFeatureList {
         return
     }
 
-    # Retrieve the operating system GUID associated with the task sequence. This GUID is used to find the corresponding OS metadata.
-    $osGuid = Get-PSDWizardTSOSGUID -TaskSequenceID $taskSequenceId -ControlPath $SyncHash.ControlPath
-    $selectedOS = @($SyncHash.OperatingSystems | Where-Object { ([string]$_.guid).Trim('{}') -eq ([string]$osGuid).Trim('{}') }) | Select-Object -First 1
-    if (-not $selectedOS) {
-        Write-PSDWizardLog -Message "No operating system matched OSGUID '$osGuid' for TaskSequenceID '$taskSequenceId'. OperatingSystems count=$(@($SyncHash.OperatingSystems).Count)" -LogLevel 2 -Component $FunctionName
-        if ($status) { $status.Text = "No operating system metadata found for Task Sequence '$taskSequenceId'." }
-        return
-    }
-    # Initialize the catalog path and node variables to null before determining the appropriate catalog based on the OS name
-    $osName = @([string]$selectedOS.Name, [string]$selectedOS.Description, [string]$selectedOS.ImageName) -join ' '
-    $scriptsPath = if ($SyncHash.ResourcePath) { Split-Path -Parent $SyncHash.ResourcePath } else { $PSScriptRoot }
-    $catalogPath = $null
-    $catalogNode = $null
-    # Initialize the feature nodes array to hold the features for the selected OS role catalog
-    if ($osName -match 'Windows 11') {
-        $catalogPath = Join-Path $scriptsPath 'Windows11Roles.xml'
-        if (Test-Path -LiteralPath $catalogPath) {
-            # Load the XML content of the Windows 11 role catalog into the $catalog variable
-            [xml]$catalog = Get-Content -LiteralPath $catalogPath -Raw
-            $catalogNode = $catalog.SelectSingleNode('/OSRoles/Roles[@ID="Windows11"]')
-            $featureNodes = if ($catalogNode) { @($catalogNode.SelectNodes('./Feature/Feature[@Id]')) } else { @() }
-        }
-        else { Write-PSDWizardLog -Message "Windows 11 role catalog was not found at '$catalogPath'" -LogLevel 2 -Component $FunctionName }
-    }
-    elseif ($osName -match 'Windows Server') {
-        $catalogPath = Join-Path $scriptsPath 'ServerManager.xml'
-        if (Test-Path -LiteralPath $catalogPath) {
-            # Load the XML content of the Server role catalog into the $catalog variable
-            [xml]$catalog = Get-Content -LiteralPath $catalogPath -Raw
-            $catalogNode = $catalog.SelectSingleNode('/OSRoles/Roles[@OS="10.0" and @Server="yes" and @Core="no" and @DisplayName="Windows Server 2019"]')
-            $featureNodes = if ($catalogNode) { @($catalogNode.SelectNodes('.//Role[@Id] | .//RoleService[@Id] | .//Feature[@Id]')) } else { @() }
-        }
-        else { Write-PSDWizardLog -Message "Server role catalog was not found at '$catalogPath'" -LogLevel 2 -Component $FunctionName }
-    }
-    else {
-        Write-PSDWizardLog -Message "No role catalog mapping matched OS '$osName'" -LogLevel 2 -Component $FunctionName
-        if ($status) { $status.Text = "No role catalog is configured for $($selectedOS.Name)." }
+    # Server or client, Core, build and OSRoleIndex of the operating system the task sequence installs
+    $context = Get-PSDWizardRoleContext -SyncHash $SyncHash -TaskSequenceID $taskSequenceId
+    Write-PSDWizardLog -Message "Role context for '$taskSequenceId': server=$($context.IsServer), core=$($context.IsCore), build=$($context.Build), OSRoleIndex='$($context.OSRoleIndex)' ($($context.Reason))" -Component $FunctionName
+    if ($null -eq $context.IsServer -and -not $context.OSRoleIndex) {
+        Write-PSDWizardLog -Message "Unable to tell if Task Sequence '$taskSequenceId' installs a server or a client operating system" -LogLevel 2 -Component $FunctionName
+        if ($status) { $status.Text = "Unable to tell which operating system Task Sequence '$taskSequenceId' installs." }
         return
     }
 
-    if (-not $catalogNode -or -not $featureNodes) {
-        Write-PSDWizardLog -Message "Role catalog invalid: nodeFound=$([bool]$catalogNode), featureNodeCount=$(@($featureNodes).Count), path='$catalogPath'" -LogLevel 2 -Component $FunctionName
-        if ($status) { $status.Text = "Role catalog not found for $($selectedOS.Name)." }
+    # The catalog is the native MDT ServerManager.xml, next to the wizard folder in the deployment share's Scripts
+    $scriptsPath = if ($SyncHash.ResourcePath) { Split-Path -Parent $SyncHash.ResourcePath } else { $PSScriptRoot }
+    $catalogPath = Join-Path $scriptsPath 'ServerManager.xml'
+    if (-not (Test-Path -LiteralPath $catalogPath)) {
+        Write-PSDWizardLog -Message "Role catalog was not found at '$catalogPath'" -LogLevel 2 -Component $FunctionName
+        if ($status) { $status.Text = 'The role catalog (ServerManager.xml) was not found.' }
         return
     }
+    try { [xml]$catalog = Get-Content -LiteralPath $catalogPath -Raw }
+    catch {
+        Write-PSDWizardLog -Message "Role catalog '$catalogPath' could not be read: $($_.Exception.Message)" -LogLevel 2 -Component $FunctionName
+        if ($status) { $status.Text = 'The role catalog (ServerManager.xml) could not be read.' }
+        return
+    }
+
+    $selection = Select-PSDWizardRoleCatalog -Catalog $catalog -Context $context
+    if (-not $selection) {
+        Write-PSDWizardLog -Message "No role catalog matches '$($context.OperatingSystem)' (server=$($context.IsServer), core=$($context.IsCore), build=$($context.Build)) in '$catalogPath'" -LogLevel 2 -Component $FunctionName
+        if ($status) { $status.Text = "No role catalog is configured for $(if ($context.OperatingSystem) { $context.OperatingSystem } else { 'this operating system' })." }
+        return
+    }
+    $catalogNode = $selection.Node
 
     $typeToProperty = @{
         Role = 'OptionalOSRoles'
         RoleService = 'OptionalOSRoleServices'
         Feature = 'OptionalOSFeatures'
     }
-    $existingSelections = @{}
-    foreach ($propertyName in $typeToProperty.Values | Select-Object -Unique) {
-        $existingSelections[$propertyName] = @([string]$SyncHash.TSEnvSettings[$propertyName] -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    # Earlier selections (this wizard, CustomSettings.ini) start checked; what the task sequence installs anyway is checked and locked
+    $selected = @{}
+    foreach ($propertyName in $typeToProperty.Values) {
+        foreach ($value in @([string]$SyncHash.TSEnvSettings[$propertyName] -split '[,;]')) { if ($value.Trim()) { $selected[$value.Trim()] = $true } }
     }
-    Write-PSDWizardLog -Message "Role catalog '$catalogPath' loaded for '$osName': items=$(@($featureNodes).Count), existingSelections=$(@($existingSelections.Values | ForEach-Object { $_ }).Count)" -Component $FunctionName
-
-    $setTSEnvProperty = ${function:Set-PSDWizardTSEnvProperty}.GetNewClosure()
-    $syncRoleSelection = {
-        param($sender, $eventArgs)
-        # The role data is kept in DataContext: the Dark theme's CheckBox style uses Tag as its high contrast flag, a Tag object leaves the check box without a template
-        $propertyName = $typeToProperty[[string]$sender.DataContext.Type]
-        if (-not $propertyName) { return }
-
-        $selectedValues = @($featureList.Items | Where-Object {
-            $_.DataContext.Type -eq $sender.DataContext.Type -and $_.IsChecked -eq $true
-        } | ForEach-Object { [string]$_.DataContext.Id })
-        $targetField = $Window.FindName("TSEnv_$propertyName")
-        if ($targetField) {
-            $targetField.Text = $selectedValues -join ','
-            if ($SyncHash.TSEnvSettings) {
-                $SyncHash.TSEnvSettings[$propertyName] = $targetField.Text
-            }
-            try {
-                & $setTSEnvProperty -Name $propertyName -Value $targetField.Text | Out-Null
-            }
-            catch {
-                Write-PSDWizardLog -Message "Unable to write $propertyName from role selection: $($_.Exception.Message)" -LogLevel 2 -Component 'RolesAndFeatures'
-            }
-            Write-PSDWizardLog -Message "Updated $propertyName from role catalog selection: $($selectedValues -join ',')" -Component 'RolesAndFeatures'
-        }
-        else {
-            Write-PSDWizardLog -Message "Unable to update ${propertyName}: hidden TSEnv field was not found" -LogLevel 2 -Component 'RolesAndFeatures'
-        }
-    }.GetNewClosure()
-
-    foreach ($featureNode in $featureNodes) {
-        $displayName = [string]$featureNode.GetAttribute('DisplayName')
-        $featureId = [string]$featureNode.GetAttribute('Id')
-        $checkBox = [System.Windows.Controls.CheckBox]::new()
-        $checkBox.Content = $displayName
-        $checkBox.DataContext = [pscustomobject]@{
-            Id = $featureId
-            Type = $featureNode.LocalName
-        }
-        $propertyName = $typeToProperty[$featureNode.LocalName]
-        $checkBox.IsChecked = $existingSelections[$propertyName] -contains $featureId
-        $checkBox.Add_Checked($syncRoleSelection)
-        $checkBox.Add_Unchecked($syncRoleSelection)
-        $checkBox.Margin = [System.Windows.Thickness]::new(4, 2, 4, 2)
-        [void]$featureList.Items.Add($checkBox)
+    $locked = @{}
+    foreach ($propertyName in 'OSRoles', 'OSRoleServices', 'OSFeatures') {
+        foreach ($value in @([string]$SyncHash.TSEnvSettings[$propertyName] -split '[,;]') + @($context.TaskSequenceStep.$propertyName)) { if ($value -and $value.Trim()) { $locked[$value.Trim()] = $true } }
     }
 
-    if ($status) { $status.Text = "$($catalogNode.DisplayName): $($featureList.Items.Count) selectable items" }
-    Write-PSDWizardLog -Message "Loaded $($featureList.Items.Count) role/feature choices from $catalogPath for $($selectedOS.Name)" -Component $MyInvocation.MyCommand.Name
+    $state = @{
+        Entries = New-Object System.Collections.ArrayList
+        Window = $Window
+        SyncHash = $SyncHash
+        TypeToProperty = $typeToProperty
+    }
+    $script:PSDWizardRoleState = $state
+    Add-PSDWizardRoleTreeNode -Items $tree.Items -Node $catalogNode -ParentEntry $null -State $state -Selected $selected -Locked $locked
+    if ($state.Entries.Count -eq 0) {
+        Write-PSDWizardLog -Message "Role catalog invalid: '$($catalogNode.DisplayName)' (ID $($catalogNode.ID)) in '$catalogPath' has no roles or features" -LogLevel 2 -Component $FunctionName
+        if ($status) { $status.Text = "Role catalog not found for $($context.OperatingSystem)." }
+        return
+    }
+
+    # Children were added after their parents, so walking backwards settles every role from the state of what is below it
+    for ($i = $state.Entries.Count - 1; $i -ge 0; $i--) { Update-PSDWizardRoleEntryState -Entry $state.Entries[$i] }
+    # Open the branches that hold something checked
+    foreach ($entry in @($state.Entries | Where-Object { $_.CheckBox.IsChecked -ne $false })) {
+        $container = $entry.Item.Parent
+        while ($container -is [System.Windows.Controls.TreeViewItem]) { $container.IsExpanded = $true; $container = $container.Parent }
+    }
+    Write-PSDWizardLog -Message "Role catalog '$($catalogNode.DisplayName)' (ID $($catalogNode.ID), $($selection.Reason)) loaded from '$catalogPath': items=$($state.Entries.Count), selected=$($selected.Count), installed by the task sequence=$($locked.Count)" -Component $FunctionName
+
+    # Drop earlier selections the catalog does not have (for instance from another task sequence's operating system)
+    Write-PSDWizardRoleSelection -State $state
+
+    if ($status) { $status.Text = "$($catalogNode.DisplayName): $($state.Entries.Count) selectable items" }
 }
 
 Function Confirm-PSDWizardPassword {
@@ -4439,7 +4834,11 @@ Function Update-PSDWizardTaskSequenceRulesCore {
             'PasswordBox' {
                 $entry.Value.Password = [string]$value
                 # A password supplied by CustomSettings/TSEnv is already confirmed (MDT has no confirm box)
-                if ($entry.Key -eq 'TSEnv_DomainAdminPassword') {
+                if ($entry.Key -eq 'TSEnv_AdminPassword') {
+                    $adminConfirmBox = $Window.FindName('_ConfirmAdminPassword')
+                    if ($adminConfirmBox) { $adminConfirmBox.Password = [string]$value }
+                }
+                elseif ($entry.Key -eq 'TSEnv_DomainAdminPassword') {
                     $domainConfirmBox = $Window.FindName('_DomainAdminConfirmPassword')
                     if ($domainConfirmBox) { $domainConfirmBox.Password = [string]$value }
                 }
@@ -6805,7 +7204,14 @@ Function Initialize-PSDWizardData {
                         Write-PSDWizardLog -Message "Set $controlName = ********" -Component $FunctionName
 
                         # A password supplied by CustomSettings/TSEnv is already confirmed (MDT has no confirm box)
-                        if ($controlName -eq 'TSEnv_DomainAdminPassword') {
+                        if ($controlName -eq 'TSEnv_AdminPassword') {
+                            $adminConfirmBox = $Window.FindName('_ConfirmAdminPassword')
+                            if ($adminConfirmBox) {
+                                $adminConfirmBox.Password = $value
+                                Write-PSDWizardLog -Message "Pre-filled _ConfirmAdminPassword from TSEnvSettings" -Component $FunctionName
+                            }
+                        }
+                        elseif ($controlName -eq 'TSEnv_DomainAdminPassword') {
                             $domainConfirmBox = $Window.FindName('_DomainAdminConfirmPassword')
                             if ($domainConfirmBox) {
                                 $domainConfirmBox.Password = $value
@@ -9352,6 +9758,60 @@ Function Register-PSDWizardApplicationHandlers {
                 }
             }.GetNewClosure()
             $bundleControl.Add_SelectionChanged($bundleSelectionHandler)
+        }
+
+        $selectAllButton = $Window.FindName('_appTabSelectAll')
+        $selectNoneButton = $Window.FindName('_appTabSelectNone')
+        $applicationExporter = ${function:Export-PSDWizardApplication}.GetNewClosure()
+
+        if ($selectAllButton -and $applicationControl) {
+            $selectAllButton.Add_Click({
+                param($sender, $e)
+                $SyncHash.IsRefreshingApplicationBundle = $true
+                try {
+                    if ($bundleControl) { $bundleControl.SelectedIndex = 0 }
+                    $SyncHash.SelectedApplicationBundleGuids = @()
+                    foreach ($item in @($applicationControl.Items)) {
+                        if ($item.IsSelectable -eq $false) { continue }
+                        $item.Selected = $true
+                        if (-not $applicationControl.SelectedItems.Contains($item)) {
+                            $applicationControl.SelectedItems.Add($item) | Out-Null
+                        }
+                    }
+                    $selectedGuids = @($applicationControl.SelectedItems | ForEach-Object { [string]$_.guid } | Where-Object { $_ } | Select-Object -Unique)
+                    & $applicationExporter -SelectedApplications $selectedGuids | Out-Null
+                }
+                finally {
+                    $SyncHash.IsRefreshingApplicationBundle = $false
+                }
+                Write-PSDWizardLog -Message "Selected all selectable applications" -Component 'Applications_Handler'
+            }.GetNewClosure())
+        }
+
+        if ($selectNoneButton -and $applicationControl) {
+            $selectNoneButton.Add_Click({
+                param($sender, $e)
+                $SyncHash.IsRefreshingApplicationBundle = $true
+                try {
+                    if ($bundleControl) { $bundleControl.SelectedIndex = 0 }
+                    $SyncHash.SelectedApplicationBundleGuids = @()
+                    foreach ($item in @($applicationControl.Items)) {
+                        $isMandatory = [bool]$item.IsMandatory -or [string]$item.guid -in @($SyncHash.MandatoryApplicationGuids)
+                        if (-not $isMandatory) {
+                            $item.Selected = $false
+                            if ($applicationControl.SelectedItems.Contains($item)) {
+                                $applicationControl.SelectedItems.Remove($item)
+                            }
+                        }
+                    }
+                    $selectedGuids = @($applicationControl.SelectedItems | ForEach-Object { [string]$_.guid } | Where-Object { $_ } | Select-Object -Unique)
+                    & $applicationExporter -SelectedApplications $selectedGuids | Out-Null
+                }
+                finally {
+                    $SyncHash.IsRefreshingApplicationBundle = $false
+                }
+                Write-PSDWizardLog -Message "Cleared all optional application selections" -Component 'Applications_Handler'
+            }.GetNewClosure())
         }
 
         Write-PSDWizardLog -Message "Applications page handlers registered successfully; bundles=$(@(Get-PSDWizardApplicationBundles -Applications $SyncHash.ApplicationCatalog).Count), applicationRows=$(@($applicationControl.Items).Count)" -Component $FunctionName

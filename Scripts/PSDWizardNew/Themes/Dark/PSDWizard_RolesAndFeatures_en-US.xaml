@@ -7,14 +7,7 @@
     <Label x:Name="_rolesTabMainTitle" Content="@MainTitle" Grid.Column="0" HorizontalAlignment="Left" Margin="10,20,0,0" VerticalAlignment="Top" FontSize="22" />
     <Label x:Name="_rolesTabSubTitle" Content="@SubTitle" Grid.Column="0" HorizontalAlignment="Left" Margin="10,73,0,0" VerticalAlignment="Top" FontSize="14" />
     <TextBlock x:Name="_rolesCatalogStatus" Grid.Column="0" Margin="10,105,14,0" VerticalAlignment="Top" Text="Loading feature catalog..." Foreground="LightGray" />
-    <ListBox x:Name="_rolesFeatureList" Grid.Column="0" HorizontalAlignment="Left" Height="375" Margin="10,132,0,0" VerticalAlignment="Top" Width="466" ScrollViewer.VerticalScrollBarVisibility="Auto" Background="#202124" Foreground="White">
-        <!-- The plain row style, like the Applications list; the shared light gray rows hide the light text -->
-        <ListBox.ItemContainerStyle>
-            <Style TargetType="ListBoxItem">
-                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-            </Style>
-        </ListBox.ItemContainerStyle>
-    </ListBox>
+    <TreeView x:Name="_rolesFeatureTree" Grid.Column="0" HorizontalAlignment="Left" Height="375" Margin="10,132,0,0" VerticalAlignment="Top" Width="466" FontSize="14" ScrollViewer.VerticalScrollBarVisibility="Auto" />
     <TextBox x:Name="TSEnv_OptionalOSRoles" Visibility="Hidden" IsEnabled="False" />
     <TextBox x:Name="TSEnv_OptionalOSRoleServices" Visibility="Hidden" IsEnabled="False" />
     <TextBox x:Name="TSEnv_OptionalOSFeatures" Visibility="Hidden" IsEnabled="False" />

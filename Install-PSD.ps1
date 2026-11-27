@@ -378,7 +378,7 @@ Foreach ($ModuleFile in $ModuleFiles) {
         $Result = New-Item "$psDeploymentFolder\Tools\Modules\$($ModuleFile)" -ItemType directory
     }
     Write-PSDInstallLog -Message "Copying module $ModuleFile to $psDeploymentFolder\Tools\Modules"
-    Copy-Item "$PSScriptRoot\Scripts\$($ModuleFile).psm1" "$psDeploymentFolder\Tools\Modules\$($ModuleFile)"
+    Copy-Item "$PSScriptRoot\Scripts\$($ModuleFile).psm1" "$psDeploymentFolder\Tools\Modules\$($ModuleFile)" -Force
     Get-ChildItem -Path "$psDeploymentFolder\Tools\Modules\$($ModuleFile)\*" | Unblock-File
 }
 

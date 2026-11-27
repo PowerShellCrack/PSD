@@ -18,7 +18,7 @@ This will output your message or text to the log file along with the calling scr
 
 ## Scripts, Modules and Libraries
 
-The following PowerShell modules and scripts are provided with PSD:
+For the complete, current inventory of all `.ps1` and `.psm1` files, including tools, samples, plugins, and legacy components, see the [Script and Module Matrix](./PowerShell%20Deployment%20-%20Script%20and%20Module%20Matrix.md). The abbreviated tables below provide MDT equivalents; use the matrix for current implementation details and limitations.
 
 ## Main PSD Scripts
 
@@ -33,7 +33,6 @@ The following PowerShell modules and scripts are provided with PSD:
 | PSDSetVariable.ps1   	| Script to set variables | ZTISetVariable.wsf |
 | PSDStart.ps1         	| Starts or continues a PSD-enabled task sequence.| LiteTouch.wsf |
 | PSDTBA.ps1           	| Placeholder script for scripts not yet converted | Varies |
-| PSDTemplate.ps1      	| Sample PowerShell template for PSD development | template | N/A
 | PSDValidate.ps1      	| Checks for system requirements            	| ZTIValidate.wsf |
 | PSDWindowsUpdate.ps1 	| Script that runs Windows Update            	| ZTIWindowsUpdate.wsf         |
 
@@ -42,9 +41,10 @@ The following PowerShell modules and scripts are provided with PSD:
 | Module                	| Description 	|
 |------------------------	|-------------	|
 | PSDGather.psm1    	    | Module for gathering information about the OS and environment (mostly from WMI), and for processing rules (Bootstrap.ini and CustomSettings.ini). All the resulting information is saved into task sequence variables.        	|
-| PSDUtility.psm1         | General utility routines for all PSD scripts.        	| PSDWizard.psm1     	    | Module for the PSD Wizard        	|
+| PSDUtility.psm1         | General utility routines for all PSD scripts. |
+| PSDWizard.psm1 | Legacy wizard module, retained but not selected by the current main startup script. |
 | PSDDeploymentshare.psm1 | Module for connecting to a deployment share and obtain content from it, using either HTTP/HTTPS or SMB.        	|
-| PSDWizardNew.psm1 | Module for new PSD Wizard
+| PSDWizardNew.psm1 | Current runspace-based WPF deployment wizard. |
 
 ## PSD Wizard Files
 
@@ -58,7 +58,6 @@ The following PowerShell modules and scripts are provided with PSD:
 
 | Module                	    | Description 	|
 |------------------------	    |-------------	|
-| DumpVars.ps1 | Enumerates all task sequence variables         	|
 | PSDHelper.ps1 | Imports main PSD modules for testing         	|
 
 ## MDT Dependencies

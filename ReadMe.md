@@ -106,6 +106,7 @@ Here are some additional documents for advanced setup
 If you need help understanding PSD or have questions, please refer to these documents first
 
 - [Toolkit Reference](./Documentation/PowerShell%20Deployment%20-%20Toolkit%20Reference.md)
+- [Script and Module Matrix](./Documentation/PowerShell%20Deployment%20-%20Script%20and%20Module%20Matrix.md)
 - [Support Matrix (MDT & PSD)](./Documentation/PowerShell%20Deployment%20-%20PSD%20vs%20MDT.md)
 - [FAQs](./Documentation/PowerShell%20Deployment%20-%20FAQ.md)
 
